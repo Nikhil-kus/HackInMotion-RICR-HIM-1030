@@ -1,7 +1,7 @@
 'use client'
 
 import React, { useState, useMemo } from 'react'
-import { calculateAllForecasts, ProductSimple, ProductForecastDetails, ForecastRecord } from './actions'
+import { calculateAllForecasts, ProductSimple, ProductForecastDetails } from './actions'
 import ForecastChart from './forecast-chart'
 
 interface ForecastClientProps {

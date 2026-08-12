@@ -3,12 +3,19 @@
 import React, { useState, useMemo } from 'react'
 import { Product, addProduct, updateProduct, deleteProduct } from './actions'
 
+interface ActiveAlertSimple {
+  product_id: string
+  alert_type: string
+  severity: string
+}
+
 interface InventoryClientProps {
   initialProducts: Product[]
+  activeAlerts: ActiveAlertSimple[]
   fetchError?: string | null
 }
 
-export default function InventoryClient({ initialProducts, fetchError }: InventoryClientProps) {
+export default function InventoryClient({ initialProducts, activeAlerts, fetchError }: InventoryClientProps) {
   const [products] = useState<Product[]>(initialProducts)
   const [searchQuery, setSearchQuery] = useState('')
   const [categoryFilter, setCategoryFilter] = useState('')
@@ -27,21 +34,49 @@ export default function InventoryClient({ initialProducts, fetchError }: Invento
     return Array.from(set).sort()
   }, [products])
 
-  // Get calculated stock status and styling
-  const getStockStatus = (stock: number) => {
+  // Get calculated stock status and styling matching Phase 7 definitions
+  const getStockStatus = (productId: string, stock: number) => {
+    const alert = activeAlerts.find((a) => a.product_id === productId)
+    if (alert) {
+      if (alert.alert_type === 'stockout') {
+        return {
+          label: 'Out of Stock',
+          badgeClass: 'bg-red-100 text-red-800 border-red-200'
+        }
+      }
+      if (alert.severity === 'critical') {
+        return {
+          label: 'Critical',
+          badgeClass: 'bg-red-100 text-red-800 border-red-200 font-bold'
+        }
+      }
+      if (alert.alert_type === 'reorder') {
+        return {
+          label: 'Low Stock',
+          badgeClass: 'bg-amber-100 text-amber-800 border-amber-200'
+        }
+      }
+      if (alert.alert_type === 'overstock') {
+        return {
+          label: 'Overstock',
+          badgeClass: 'bg-blue-100 text-blue-800 border-blue-200'
+        }
+      }
+    }
+
     if (stock === 0) {
       return {
-        label: 'Out of stock',
+        label: 'Out of Stock',
         badgeClass: 'bg-red-100 text-red-800 border-red-200'
       }
     } else if (stock < 10) {
       return {
-        label: 'Low stock',
+        label: 'Low Stock',
         badgeClass: 'bg-amber-100 text-amber-800 border-amber-200'
       }
     } else {
       return {
-        label: 'Healthy stock',
+        label: 'Healthy',
         badgeClass: 'bg-emerald-100 text-emerald-800 border-emerald-200'
       }
     }
@@ -221,14 +256,14 @@ export default function InventoryClient({ initialProducts, fetchError }: Invento
                   <th scope="col" className="px-6 py-3.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Current Stock</th>
                   <th scope="col" className="px-6 py-3.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Price</th>
                   <th scope="col" className="px-6 py-3.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Supplier</th>
-                  <th scope="col" className="px-6 py-3.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Lead Time</th>
+                  <th scope="col" className="px-6 py-3.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Lead Time / Shelf Life</th>
                   <th scope="col" className="px-6 py-3.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Status</th>
                   <th scope="col" className="relative px-6 py-3.5"><span className="sr-only">Actions</span></th>
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
                 {filteredProducts.map((product) => {
-                  const status = getStockStatus(product.current_stock)
+                  const status = getStockStatus(product.id, product.current_stock)
                   return (
                     <tr key={product.id} className="hover:bg-gray-50/50 transition-colors">
                       <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{product.name}</td>
@@ -237,7 +272,8 @@ export default function InventoryClient({ initialProducts, fetchError }: Invento
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">₹{product.price.toFixed(2)}</td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{product.supplier_name || 'N/A'}</td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                        {product.supplier_lead_time_days} {product.supplier_lead_time_days === 1 ? 'day' : 'days'}
+                        <div>Lead Time: {product.supplier_lead_time_days} {product.supplier_lead_time_days === 1 ? 'day' : 'days'}</div>
+                        <div className="text-xs text-gray-400">Shelf Life: {product.shelf_life_days ? `${product.shelf_life_days} days` : 'N/A'}</div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm">
                         <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border ${status.badgeClass}`}>
@@ -302,6 +338,10 @@ export default function InventoryClient({ initialProducts, fetchError }: Invento
                 <label className="block text-sm font-medium text-gray-700">Supplier Lead Time (Days)</label>
                 <input required type="number" min="0" defaultValue="0" name="supplier_lead_time_days" className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md text-sm text-gray-900 focus:outline-none focus:ring-blue-500 focus:border-blue-500" />
               </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Shelf Life (Days) <span className="text-xs text-gray-400">(Optional)</span></label>
+                <input type="number" min="1" name="shelf_life_days" placeholder="e.g. 3 for Milk, 180 for Biscuits" className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md text-sm text-gray-900 focus:outline-none focus:ring-blue-500 focus:border-blue-500" />
+              </div>
               <div className="flex justify-end space-x-3 pt-4 border-t border-gray-150">
                 <button
                   type="button"
@@ -357,6 +397,10 @@ export default function InventoryClient({ initialProducts, fetchError }: Invento
               <div>
                 <label className="block text-sm font-medium text-gray-700">Supplier Lead Time (Days)</label>
                 <input required type="number" min="0" name="supplier_lead_time_days" defaultValue={editingProduct.supplier_lead_time_days} className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md text-sm text-gray-900 focus:outline-none focus:ring-blue-500 focus:border-blue-500" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Shelf Life (Days) <span className="text-xs text-gray-400">(Optional)</span></label>
+                <input type="number" min="1" name="shelf_life_days" defaultValue={editingProduct.shelf_life_days || ''} placeholder="e.g. 3 for Milk, 180 for Biscuits" className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md text-sm text-gray-900 focus:outline-none focus:ring-blue-500 focus:border-blue-500" />
               </div>
               <div className="flex justify-end space-x-3 pt-4 border-t border-gray-150">
                 <button

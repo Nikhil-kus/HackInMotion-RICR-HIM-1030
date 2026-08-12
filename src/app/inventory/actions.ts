@@ -12,6 +12,7 @@ export interface Product {
   price: number
   supplier_name: string
   supplier_lead_time_days: number
+  shelf_life_days?: number | null
   created_at: string
   updated_at: string
 }
@@ -47,6 +48,7 @@ export async function addProduct(formData: FormData) {
   const priceStr = formData.get('price') as string
   const supplierName = (formData.get('supplier_name') as string) || ''
   const supplierLeadTimeStr = formData.get('supplier_lead_time_days') as string
+  const shelfLifeStr = formData.get('shelf_life_days') as string
 
   // Simple validation
   if (!name?.trim()) return { error: 'Product name is required.' }
@@ -67,6 +69,14 @@ export async function addProduct(formData: FormData) {
     return { error: 'Lead time must be a non-negative number of days.' }
   }
 
+  let shelf_life_days: number | null = null
+  if (shelfLifeStr && shelfLifeStr.trim() !== '') {
+    shelf_life_days = parseInt(shelfLifeStr, 10)
+    if (isNaN(shelf_life_days) || shelf_life_days <= 0) {
+      return { error: 'Shelf life must be a positive number of days.' }
+    }
+  }
+
   const { error } = await supabase.from('products').insert({
     user_id: user.id,
     name,
@@ -75,6 +85,7 @@ export async function addProduct(formData: FormData) {
     price,
     supplier_name: supplierName,
     supplier_lead_time_days,
+    shelf_life_days,
   })
 
   if (error) {
@@ -100,6 +111,7 @@ export async function updateProduct(id: string, formData: FormData) {
   const priceStr = formData.get('price') as string
   const supplierName = (formData.get('supplier_name') as string) || ''
   const supplierLeadTimeStr = formData.get('supplier_lead_time_days') as string
+  const shelfLifeStr = formData.get('shelf_life_days') as string
 
   // Simple validation
   if (!name?.trim()) return { error: 'Product name is required.' }
@@ -120,6 +132,14 @@ export async function updateProduct(id: string, formData: FormData) {
     return { error: 'Lead time must be a non-negative number of days.' }
   }
 
+  let shelf_life_days: number | null = null
+  if (shelfLifeStr && shelfLifeStr.trim() !== '') {
+    shelf_life_days = parseInt(shelfLifeStr, 10)
+    if (isNaN(shelf_life_days) || shelf_life_days <= 0) {
+      return { error: 'Shelf life must be a positive number of days.' }
+    }
+  }
+
   // RLS ensures the user can only update their own records
   const { error } = await supabase
     .from('products')
@@ -130,6 +150,7 @@ export async function updateProduct(id: string, formData: FormData) {
       price,
       supplier_name: supplierName,
       supplier_lead_time_days,
+      shelf_life_days,
     })
     .eq('id', id)
 
