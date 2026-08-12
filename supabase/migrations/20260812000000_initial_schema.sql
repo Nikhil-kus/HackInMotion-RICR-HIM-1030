@@ -141,3 +141,10 @@ CREATE TRIGGER set_products_updated_at
   BEFORE UPDATE ON public.products
   FOR EACH ROW
   EXECUTE FUNCTION public.handle_updated_at();
+
+-- 5. GRANT PRIVILEGES TO API ROLES
+-- Since 'Automatically expose new tables' was disabled, we must manually grant privileges to API gateway roles.
+GRANT ALL ON ALL TABLES IN SCHEMA public TO anon, authenticated, service_role;
+GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO anon, authenticated, service_role;
+GRANT ALL ON ALL FUNCTIONS IN SCHEMA public TO anon, authenticated, service_role;
+

@@ -1,6 +1,6 @@
 import { createClient } from '@/utils/supabase/server'
 import { redirect } from 'next/navigation'
-import { logout } from '../auth/actions'
+import DashboardLayout from '@/components/DashboardLayout'
 
 export default async function DashboardPage() {
   const supabase = await createClient()
@@ -13,41 +13,72 @@ export default async function DashboardPage() {
     redirect('/auth/login')
   }
 
-  return (
-    <div className="min-h-screen bg-gray-50">
-      <nav className="bg-white shadow-sm border-b border-gray-200">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between h-16">
-            <div className="flex items-center">
-              <h1 className="text-xl font-bold text-gray-900">StockMind AI</h1>
-            </div>
-            <div className="flex items-center">
-              <span className="text-sm text-gray-500 mr-4">{user.email}</span>
-              <form action={logout}>
-                <button
-                  type="submit"
-                  className="inline-flex items-center px-3 py-1.5 border border-transparent text-xs font-medium rounded-md text-red-700 bg-red-100 hover:bg-red-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500"
-                >
-                  Logout
-                </button>
-              </form>
-            </div>
-          </div>
-        </div>
-      </nav>
+  // Fetch count of products to show a quick stat
+  const { count } = await supabase
+    .from('products')
+    .select('*', { count: 'exact', head: true })
 
-      <main className="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
-        <div className="px-4 py-6 sm:px-0">
-          <div className="border-4 border-dashed border-gray-200 rounded-lg h-96 flex items-center justify-center bg-white">
-            <div className="text-center">
-              <h2 className="text-lg font-medium text-gray-900">Welcome to your dashboard</h2>
-              <p className="mt-1 text-sm text-gray-500">
-                You are securely logged in. Product and inventory features will be added in the next phase.
-              </p>
+  return (
+    <DashboardLayout userEmail={user.email}>
+      <div className="space-y-6">
+        <div>
+          <h2 className="text-2xl font-bold text-gray-900">Dashboard Overview</h2>
+          <p className="text-gray-500 text-sm mt-1 font-normal">Welcome back! Here is a summary of your inventory status.</p>
+        </div>
+
+        {/* Stats Grid */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm flex flex-col justify-between">
+            <div>
+              <span className="text-gray-500 text-sm font-medium">Total Products</span>
+              <span className="block text-3xl font-bold text-gray-900 mt-2">{count ?? 0}</span>
+            </div>
+            <div className="mt-4">
+              <a href="/inventory" className="text-xs text-blue-600 font-medium hover:underline">
+                View inventory →
+              </a>
             </div>
           </div>
+
+          <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm flex flex-col justify-between opacity-75">
+            <div>
+              <span className="text-gray-500 text-sm font-medium">Total Sales</span>
+              <span className="block text-3xl font-bold text-gray-400 mt-2">--</span>
+            </div>
+            <span className="text-xs text-gray-400 font-medium mt-4 block">
+              Feature coming soon
+            </span>
+          </div>
+
+          <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm flex flex-col justify-between opacity-75">
+            <div>
+              <span className="text-gray-500 text-sm font-medium">Demand Forecasts</span>
+              <span className="block text-3xl font-bold text-gray-400 mt-2">--</span>
+            </div>
+            <span className="text-xs text-gray-400 font-medium mt-4 block">
+              Feature coming soon
+            </span>
+          </div>
+
+          <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm flex flex-col justify-between opacity-75">
+            <div>
+              <span className="text-gray-500 text-sm font-medium">Active Alerts</span>
+              <span className="block text-3xl font-bold text-gray-400 mt-2">--</span>
+            </div>
+            <span className="text-xs text-gray-400 font-medium mt-4 block">
+              Feature coming soon
+            </span>
+          </div>
         </div>
-      </main>
-    </div>
+
+        {/* Welcome Section */}
+        <div className="bg-white border border-gray-200 rounded-xl p-8 shadow-sm">
+          <h3 className="text-lg font-medium text-gray-950">Get Started with StockMind AI</h3>
+          <p className="text-gray-500 text-sm mt-2 max-w-2xl font-normal leading-relaxed">
+            Navigate to the Inventory section to add and track products, manage supplier lead times, and monitor stock health levels.
+          </p>
+        </div>
+      </div>
+    </DashboardLayout>
   )
 }
