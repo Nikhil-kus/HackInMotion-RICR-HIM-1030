@@ -1,20 +1,65 @@
 import { createClient } from '@/utils/supabase/server'
 import { redirect } from 'next/navigation'
+import { ProductForecastDetails } from './actions'
+import { generateProductForecast } from '@/lib/forecasting/engine'
+import ForecastClient from './forecast-client'
 import DashboardLayout from '@/components/DashboardLayout'
 
-export default async function ForecastsPlaceholderPage() {
+export default async function ForecastsPage() {
   const supabase = await createClient()
+
+  // Get current user to verify session
   const { data: { user } } = await supabase.auth.getUser()
-  if (!user) redirect('/auth/login')
+  if (!user) {
+    redirect('/auth/login')
+  }
+
+
+
+  // Fetch user's products list
+  const { data: products } = await supabase
+    .from('products')
+    .select('id, name, price')
+    .order('name', { ascending: true })
+
+  // Fetch user's sales history to compute in-memory preview statistics
+  const { data: sales } = await supabase
+    .from('sales')
+    .select('product_id, sale_date, quantity')
+    .eq('user_id', user.id)
+
+  // Pre-calculate summaries in-memory for the initial page load state
+  const summaries: ProductForecastDetails[] = []
+  
+  if (products && products.length > 0) {
+    // Group sales by product
+    const salesMap = new Map<string, Array<{ sale_date: string; quantity: number }>>()
+    products.forEach((p) => salesMap.set(p.id, []))
+    
+    sales?.forEach((s) => {
+      const list = salesMap.get(s.product_id)
+      if (list) {
+        list.push({ sale_date: s.sale_date, quantity: s.quantity })
+      }
+    })
+
+    products.forEach((product) => {
+      const productSales = salesMap.get(product.id) || []
+      const engineSummary = generateProductForecast(product.id, productSales, 90)
+      
+      summaries.push({
+        ...engineSummary,
+        productName: product.name
+      })
+    })
+  }
 
   return (
     <DashboardLayout userEmail={user.email}>
-      <div className="bg-white border border-gray-200 rounded-xl p-12 text-center shadow-sm">
-        <h2 className="text-xl font-bold text-gray-900">Demand Forecasting Engine</h2>
-        <p className="text-gray-500 text-sm mt-2 max-w-md mx-auto leading-relaxed">
-          This feature is scheduled for development in Phase 6. It will calculate demand forecasts using weighted moving averages, trends, and seasonal components.
-        </p>
-      </div>
+      <ForecastClient
+        products={products || []}
+        initialSummaries={summaries}
+      />
     </DashboardLayout>
   )
 }
