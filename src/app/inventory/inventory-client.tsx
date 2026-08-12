@@ -234,7 +234,7 @@ export default function InventoryClient({ initialProducts, fetchError }: Invento
                       <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{product.name}</td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{product.category}</td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{product.current_stock}</td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${product.price.toFixed(2)}</td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">₹{product.price.toFixed(2)}</td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{product.supplier_name || 'N/A'}</td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                         {product.supplier_lead_time_days} {product.supplier_lead_time_days === 1 ? 'day' : 'days'}
@@ -290,7 +290,7 @@ export default function InventoryClient({ initialProducts, fetchError }: Invento
                   <input required type="number" min="0" defaultValue="0" name="current_stock" className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md text-sm text-gray-900 focus:outline-none focus:ring-blue-500 focus:border-blue-500" />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700">Price ($)</label>
+                  <label className="block text-sm font-medium text-gray-700">Price (₹)</label>
                   <input required type="number" step="0.01" min="0" defaultValue="0.00" name="price" className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md text-sm text-gray-900 focus:outline-none focus:ring-blue-500 focus:border-blue-500" />
                 </div>
               </div>
@@ -346,7 +346,7 @@ export default function InventoryClient({ initialProducts, fetchError }: Invento
                   <input required type="number" min="0" name="current_stock" defaultValue={editingProduct.current_stock} className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md text-sm text-gray-900 focus:outline-none focus:ring-blue-500 focus:border-blue-500" />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700">Price ($)</label>
+                  <label className="block text-sm font-medium text-gray-700">Price (₹)</label>
                   <input required type="number" step="0.01" min="0" name="price" defaultValue={editingProduct.price} className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md text-sm text-gray-900 focus:outline-none focus:ring-blue-500 focus:border-blue-500" />
                 </div>
               </div>

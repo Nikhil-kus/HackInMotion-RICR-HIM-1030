@@ -1,20 +1,35 @@
 import { createClient } from '@/utils/supabase/server'
 import { redirect } from 'next/navigation'
+import { fetchSalesData } from './actions'
+import SalesClient from './sales-client'
 import DashboardLayout from '@/components/DashboardLayout'
 
-export default async function SalesPlaceholderPage() {
+export default async function SalesPage() {
   const supabase = await createClient()
+
+  // Get current user to verify session
   const { data: { user } } = await supabase.auth.getUser()
-  if (!user) redirect('/auth/login')
+  if (!user) {
+    redirect('/auth/login')
+  }
+
+  // Fetch sales records and summary stats
+  const { data: sales, stats, error: salesError } = await fetchSalesData()
+
+  // Fetch simple list of user's products for matching in the CSV import
+  const { data: products } = await supabase
+    .from('products')
+    .select('id, name, price')
+    .order('name', { ascending: true })
 
   return (
     <DashboardLayout userEmail={user.email}>
-      <div className="bg-white border border-gray-200 rounded-xl p-12 text-center shadow-sm">
-        <h2 className="text-xl font-bold text-gray-900">Sales Transactions Module</h2>
-        <p className="text-gray-500 text-sm mt-2 max-w-md mx-auto leading-relaxed">
-          This feature is scheduled for development in Phase 5. It will support normalized transaction data uploads via CSV and API integration.
-        </p>
-      </div>
+      <SalesClient
+        initialSales={sales || []}
+        initialStats={stats || { totalRecords: 0, totalUnits: 0, totalRevenue: 0 }}
+        products={products || []}
+        fetchError={salesError}
+      />
     </DashboardLayout>
   )
 }
