@@ -1,5 +1,5 @@
 import { createClient } from '@/utils/supabase/server'
-import { fetchProducts } from './actions'
+import { fetchProducts, fetchAllAliases } from './actions'
 import { calculateAndStoreAlerts } from '@/app/alerts/actions'
 import InventoryClient from './inventory-client'
 import DashboardLayout from '@/components/DashboardLayout'
@@ -7,9 +7,9 @@ import { redirect } from 'next/navigation'
 
 export default async function InventoryPage() {
   const supabase = await createClient()
-  
+
   const { data: { user } } = await supabase.auth.getUser()
-  
+
   if (!user) {
     redirect('/auth/login')
   }
@@ -24,14 +24,27 @@ export default async function InventoryPage() {
     .eq('user_id', user.id)
     .eq('resolved', false)
 
-  const { data: products, error } = await fetchProducts()
+  // Fetch products and aliases in parallel
+  const [productsResult, aliasesResult] = await Promise.all([
+    fetchProducts(),
+    fetchAllAliases(),
+  ])
+
+  const { data: products, error } = productsResult
+  const aliases = aliasesResult.data || []
+
+  // Merge aliases into product records for client-side search
+  const productsWithAliases = (products || []).map((p) => ({
+    ...p,
+    aliases: aliases.filter((a) => a.product_id === p.id),
+  }))
 
   return (
     <DashboardLayout userEmail={user.email}>
-      <InventoryClient 
-        initialProducts={products || []} 
-        activeAlerts={activeAlerts || []} 
-        fetchError={error} 
+      <InventoryClient
+        initialProducts={productsWithAliases}
+        activeAlerts={activeAlerts || []}
+        fetchError={error}
       />
     </DashboardLayout>
   )
