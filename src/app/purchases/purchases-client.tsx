@@ -378,7 +378,7 @@ export default function PurchasesClient({
                                   min={1}
                                   value={purchaseQty}
                                   onChange={(e) => updateQty(rec.productId, parseInt(e.target.value) || 0)}
-                                  className="w-20 px-2 py-1 border border-gray-300 rounded-md text-sm focus:ring-blue-500 focus:border-blue-500"
+                                  className="w-20 px-2 py-1 border border-gray-400 bg-white text-gray-900 font-semibold rounded-md text-sm focus:ring-blue-500 focus:border-blue-500 shadow-sm"
                                 />
                               ) : (
                                 <span className="text-gray-400 text-xs">—</span>
@@ -393,7 +393,7 @@ export default function PurchasesClient({
                                   value={unitCost ?? ''}
                                   onChange={(e) => updateCost(rec.productId, parseFloat(e.target.value) || 0)}
                                   placeholder="0.00"
-                                  className="w-24 px-2 py-1 border border-gray-300 rounded-md text-sm focus:ring-blue-500 focus:border-blue-500"
+                                  className="w-24 px-2 py-1 border border-gray-400 bg-white text-gray-900 font-semibold rounded-md text-sm focus:ring-blue-500 focus:border-blue-500 shadow-sm"
                                 />
                               ) : (
                                 <span className="text-gray-500 text-xs">{rec.purchasePrice ? formatCurrency(rec.purchasePrice) : '—'}</span>

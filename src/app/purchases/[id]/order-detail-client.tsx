@@ -233,7 +233,7 @@ export default function OrderDetailClient({ order }: OrderDetailClientProps) {
                         return next
                       })
                     }}
-                    className="w-24 px-2 py-1.5 border border-blue-300 rounded-md text-sm focus:ring-blue-500 focus:border-blue-500 bg-white"
+                    className="w-24 px-2 py-1.5 border border-blue-300 rounded-md text-sm text-gray-900 font-semibold focus:ring-blue-500 focus:border-blue-500 bg-white"
                   />
                 </div>
               )
