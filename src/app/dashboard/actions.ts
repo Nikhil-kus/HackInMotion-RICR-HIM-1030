@@ -1,0 +1,497 @@
+'use server'
+
+import { createClient } from '@/utils/supabase/server'
+import { generateProductForecast } from '@/lib/forecasting/engine'
+import { calculateAndStoreAlerts } from '@/app/alerts/actions'
+import { fetchPurchaseMetrics } from '@/app/purchases/actions'
+
+export interface DailySalesTrend {
+  date: string      // YYYY-MM-DD
+  label: string     // MMM DD
+  quantity: number
+  revenue: number
+}
+
+export interface BIProductSummary {
+  id: string
+  name: string
+  price: number
+  current_stock: number
+  supplier_lead_time_days: number
+  shelf_life_days: number | null
+  salesVolume: number
+  salesRevenue: number
+  daysOfStock: number
+  capitalAtRisk: number
+  trend: 'Increasing' | 'Stable' | 'Decreasing'
+  confidenceScore: number
+  status: 'out_of_stock' | 'critical' | 'low' | 'healthy' | 'overstock'
+}
+
+export interface BIActiveAlert {
+  id: string
+  product_id: string
+  product_name: string
+  alert_type: 'stockout' | 'overstock' | 'reorder'
+  severity: 'low' | 'medium' | 'high' | 'critical'
+  message: string
+  recommended_quantity: number
+  current_stock: number
+  price: number
+  reason: string
+}
+
+export interface ExpiryRiskProduct {
+  id: string
+  name: string
+  current_stock: number
+  shelf_life_days: number
+  daysOfStock: number
+  price: number
+  capitalAtRisk: number
+}
+
+export interface DashboardAnalyticsData {
+  // Section A: Executive Summary KPI Cards
+  kpis: {
+    totalProducts: number
+    inventoryUnits: number
+    inventoryValue: number
+    salesVolume: number
+    salesRevenue: number
+    forecastUnits7Days: number
+    reorderValue: number
+  }
+  // Section B: Inventory Health Visual Distribution
+  healthDistribution: {
+    outOfStock: number
+    critical: number
+    low: number
+    healthy: number
+    overstock: number
+  }
+  // Section C: Sales Analytics
+  salesAnalytics: {
+    trend: DailySalesTrend[]
+    peakSalesDay: { date: string; quantity: number; revenue: number } | null
+    avgDailyVelocity: number
+  }
+  // Section D: Top & Slow Products
+  topProducts: BIProductSummary[]
+  slowProducts: BIProductSummary[]
+  // Section E: Demand Forecast Insights
+  forecastInsights: {
+    trendCounts: { Increasing: number; Stable: number; Decreasing: number }
+    growthProducts: BIProductSummary[]
+  }
+  // Section F: Needs Attention
+  needsAttention: BIActiveAlert[]
+  // Section G: Purchase Analytics & Expiry Risk
+  purchasing: {
+    draftCount: number
+    pendingCount: number
+    pendingValue: number
+  }
+  expiryRisks: ExpiryRiskProduct[]
+  // Section H: StockMind AI Natural Language Insights
+  aiInsights: string[]
+}
+
+export async function fetchDashboardAnalytics(dateRangeDays: number): Promise<{ data?: DashboardAnalyticsData; error?: string }> {
+  try {
+    const supabase = await createClient()
+
+    // 1. Get authenticated user
+    const { data: { user }, error: userError } = await supabase.auth.getUser()
+    if (userError || !user) {
+      return { error: 'Unauthorized. Please log in.' }
+    }
+
+    // 2. Pre-calculate alerts to keep database fresh
+    await calculateAndStoreAlerts()
+
+    // 3. Fetch products
+    const { data: productsRaw, error: productsErr } = await supabase
+      .from('products')
+      .select('id, name, price, current_stock, supplier_lead_time_days, shelf_life_days')
+      .eq('user_id', user.id)
+
+    if (productsErr) {
+      console.error('Error fetching products:', productsErr)
+      return { error: 'Failed to fetch products.' }
+    }
+
+    const products = productsRaw || []
+
+    // 4. Calculate date cutoff
+    const cutoffDate = new Date()
+    cutoffDate.setDate(cutoffDate.getDate() - dateRangeDays)
+    const cutoffDateIso = cutoffDate.toISOString()
+
+    // 5. Fetch sales in selected range
+    const { data: salesRaw, error: salesErr } = await supabase
+      .from('sales')
+      .select('product_id, sale_date, quantity, unit_price')
+      .eq('user_id', user.id)
+      .gte('sale_date', cutoffDateIso)
+
+    if (salesErr) {
+      console.error('Error fetching sales:', salesErr)
+      return { error: 'Failed to fetch sales history.' }
+    }
+
+    const sales = salesRaw || []
+
+    // 6. Fetch ALL sales for forecasting trend calculations (last 90 days to ensure accuracy)
+    const ninetyDaysAgo = new Date()
+    ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90)
+    const { data: forecastSalesRaw } = await supabase
+      .from('sales')
+      .select('product_id, sale_date, quantity')
+      .eq('user_id', user.id)
+      .gte('sale_date', ninetyDaysAgo.toISOString())
+
+    const forecastSales = forecastSalesRaw || []
+
+    // 7. Fetch active alerts
+    const { data: alertsRaw, error: alertsErr } = await supabase
+      .from('alerts')
+      .select('id, product_id, alert_type, severity, message, recommended_quantity')
+      .eq('user_id', user.id)
+      .eq('resolved', false)
+
+    if (alertsErr) {
+      console.error('Error fetching alerts:', alertsErr)
+      return { error: 'Failed to fetch active alerts.' }
+    }
+
+    const activeAlerts = alertsRaw || []
+
+    // 8. Fetch forecasts (Next 7 days)
+    const todayStr = new Date().toISOString().split('T')[0]
+    const next7Days = new Date()
+    next7Days.setDate(next7Days.getDate() + 7)
+    const next7DaysStr = next7Days.toISOString().split('T')[0]
+
+    const { data: forecastsRaw } = await supabase
+      .from('forecasts')
+      .select('product_id, forecast_date, predicted_demand')
+      .eq('user_id', user.id)
+      .eq('model_version', 'hybrid-wma-trend-seasonality-v1')
+      .gte('forecast_date', todayStr)
+      .lte('forecast_date', next7DaysStr)
+
+    const forecasts = forecastsRaw || []
+
+    // 9. Fetch Purchase Metrics
+    const purchaseMetricsResult = await fetchPurchaseMetrics()
+    const purchasing = purchaseMetricsResult.data || { draftCount: 0, pendingCount: 0, pendingValue: 0 }
+
+    // Map sales by product for forecast engine
+    const salesMap = new Map<string, Array<{ sale_date: string; quantity: number }>>()
+    products.forEach((p) => salesMap.set(p.id, []))
+    forecastSales.forEach((s) => {
+      const list = salesMap.get(s.product_id)
+      if (list) list.push({ sale_date: s.sale_date, quantity: s.quantity })
+    })
+
+    // Map active alerts by product for fast lookup
+    const alertsMap = new Map<string, typeof activeAlerts[0]>()
+    activeAlerts.forEach((a) => {
+      alertsMap.set(a.product_id, a)
+    })
+
+    // Generate product summaries and forecasts
+    const biProducts: BIProductSummary[] = []
+    const trendCounts = { Increasing: 0, Stable: 0, Decreasing: 0 }
+
+    products.forEach((p) => {
+      const productSales = salesMap.get(p.id) || []
+      const summary = generateProductForecast(p.id, productSales, 90)
+
+      // Calculate sales volume & revenue in selected date window
+      const inWindowSales = sales.filter((s) => s.product_id === p.id)
+      const salesVolume = inWindowSales.reduce((sum, s) => sum + s.quantity, 0)
+      const salesRevenue = inWindowSales.reduce((sum, s) => sum + s.quantity * Number(s.unit_price), 0)
+
+      // Average daily velocity
+      const avgDailyDemand = salesVolume / dateRangeDays
+      const daysOfStock = p.current_stock > 0
+        ? (avgDailyDemand > 0 ? p.current_stock / avgDailyDemand : 999)
+        : 0
+
+      // Trend counts from forecast engine
+      let trend: 'Increasing' | 'Stable' | 'Decreasing' = 'Stable'
+      let confidenceScore = 0
+      if (!summary.insufficientData) {
+        trend = summary.trend as 'Increasing' | 'Stable' | 'Decreasing'
+        confidenceScore = summary.confidenceScore
+        trendCounts[trend]++
+      } else {
+        trendCounts['Stable']++
+      }
+
+      // Resolve status based on active alerts
+      let status: 'out_of_stock' | 'critical' | 'low' | 'healthy' | 'overstock' = 'healthy'
+      const activeAlert = alertsMap.get(p.id)
+      if (activeAlert) {
+        if (activeAlert.alert_type === 'stockout') {
+          status = 'out_of_stock'
+        } else if (activeAlert.alert_type === 'overstock') {
+          status = 'overstock'
+        } else if (activeAlert.alert_type === 'reorder') {
+          status = activeAlert.severity === 'critical' ? 'critical' : 'low'
+        }
+      } else if (p.current_stock === 0) {
+        status = 'out_of_stock'
+      }
+
+      biProducts.push({
+        id: p.id,
+        name: p.name,
+        price: Number(p.price),
+        current_stock: p.current_stock,
+        supplier_lead_time_days: p.supplier_lead_time_days,
+        shelf_life_days: p.shelf_life_days,
+        salesVolume,
+        salesRevenue,
+        daysOfStock,
+        capitalAtRisk: p.current_stock * Number(p.price),
+        trend,
+        confidenceScore,
+        status
+      })
+    })
+
+    // KPI Card computations
+    const totalProducts = products.length
+    const inventoryUnits = products.reduce((sum, p) => sum + p.current_stock, 0)
+    const inventoryValue = products.reduce((sum, p) => sum + p.current_stock * Number(p.price), 0)
+    const salesVolume = sales.reduce((sum, s) => sum + s.quantity, 0)
+    const salesRevenue = sales.reduce((sum, s) => sum + s.quantity * Number(s.unit_price), 0)
+    const forecastUnits7Days = forecasts.reduce((sum, f) => sum + Number(f.predicted_demand), 0)
+
+    // Calculate Reorder Value from active alerts
+    let reorderValue = 0
+    activeAlerts.forEach((alert) => {
+      if (alert.alert_type === 'reorder' || alert.alert_type === 'stockout') {
+        const prod = products.find((p) => p.id === alert.product_id)
+        if (prod) {
+          reorderValue += alert.recommended_quantity * Number(prod.price)
+        }
+      }
+    })
+
+    // Health Distribution counts
+    const healthDistribution = {
+      outOfStock: biProducts.filter((p) => p.status === 'out_of_stock').length,
+      critical: biProducts.filter((p) => p.status === 'critical').length,
+      low: biProducts.filter((p) => p.status === 'low').length,
+      healthy: biProducts.filter((p) => p.status === 'healthy').length,
+      overstock: biProducts.filter((p) => p.status === 'overstock').length,
+    }
+
+    // Timeline sales trend for Section C chart
+    const trendMap = new Map<string, { quantity: number; revenue: number }>()
+    for (let i = 0; i < dateRangeDays; i++) {
+      const d = new Date()
+      d.setDate(d.getDate() - i)
+      const dateKey = d.toISOString().split('T')[0]
+      trendMap.set(dateKey, { quantity: 0, revenue: 0 })
+    }
+
+    sales.forEach((s) => {
+      const dateKey = new Date(s.sale_date).toISOString().split('T')[0]
+      const current = trendMap.get(dateKey)
+      if (current) {
+        current.quantity += s.quantity
+        current.revenue += s.quantity * Number(s.unit_price)
+      }
+    })
+
+    const trendArray: DailySalesTrend[] = Array.from(trendMap.entries())
+      .map(([date, data]) => {
+        const parsedDate = new Date(date)
+        const label = parsedDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })
+        return {
+          date,
+          label,
+          quantity: data.quantity,
+          revenue: data.revenue
+        }
+      })
+      // Sort chronologically (oldest to newest)
+      .sort((a, b) => a.date.localeCompare(b.date))
+
+    // Find peak sales day
+    let peakSalesDay: { date: string; quantity: number; revenue: number } | null = null
+    trendArray.forEach((t) => {
+      if (!peakSalesDay || t.quantity > peakSalesDay.quantity) {
+        peakSalesDay = { date: t.date, quantity: t.quantity, revenue: t.revenue }
+      }
+    })
+
+    const avgDailyVelocity = dateRangeDays > 0 ? salesVolume / dateRangeDays : 0
+
+    // Top 5 Products by Sales Volume
+    const topProducts = [...biProducts]
+      .filter((p) => p.salesVolume > 0)
+      .sort((a, b) => b.salesVolume - a.salesVolume)
+      .slice(0, 5)
+
+    // Slow-moving Products by sales velocity (sorted ascending)
+    const slowProducts = [...biProducts]
+      .sort((a, b) => a.salesVolume - b.salesVolume)
+      .slice(0, 5)
+
+    // Forecast Insights growth products: Increasing trend, sorted by confidence score desc
+    const growthProducts = biProducts
+      .filter((p) => p.trend === 'Increasing')
+      .sort((a, b) => b.confidenceScore - a.confidenceScore)
+      .slice(0, 5)
+
+    // Section F: Needs Attention active alerts mapped nicely
+    const needsAttention: BIActiveAlert[] = activeAlerts
+      .map((a) => {
+        const prod = products.find((p) => p.id === a.product_id)
+        let alertReason = ''
+        try {
+          const parsed = JSON.parse(a.message)
+          alertReason = parsed.reason || a.message
+        } catch {
+          alertReason = a.message
+        }
+
+        return {
+          id: a.id,
+          product_id: a.product_id,
+          product_name: prod?.name || 'Unknown Product',
+          alert_type: a.alert_type as 'stockout' | 'overstock' | 'reorder',
+          severity: a.severity as 'low' | 'medium' | 'high' | 'critical',
+          message: a.message,
+          recommended_quantity: a.recommended_quantity,
+          current_stock: prod?.current_stock || 0,
+          price: prod ? Number(prod.price) : 0,
+          reason: alertReason
+        }
+      })
+      .sort((a, b) => {
+        // Sort order: critical -> high -> medium -> low
+        const severityWeight = { critical: 4, high: 3, medium: 2, low: 1 }
+        const weightA = severityWeight[a.severity] || 0
+        const weightB = severityWeight[b.severity] || 0
+        return weightB - weightA
+      })
+
+    // Expiry / Overstock Risk: products with shelf life where daysOfStock > shelf_life_days
+    const expiryRisks: ExpiryRiskProduct[] = biProducts
+      .filter((p) => p.shelf_life_days !== null && p.shelf_life_days > 0 && p.daysOfStock > p.shelf_life_days)
+      .map((p) => ({
+        id: p.id,
+        name: p.name,
+        current_stock: p.current_stock,
+        shelf_life_days: p.shelf_life_days as number,
+        daysOfStock: p.daysOfStock,
+        price: p.price,
+        capitalAtRisk: p.current_stock * p.price
+      }))
+      .sort((a, b) => b.capitalAtRisk - a.capitalAtRisk)
+
+    // Section H: StockMind AI Natural Language Insights (deterministic)
+    const aiInsights: string[] = []
+
+    // 1. Stockout/Critical alert insight
+    const criticalCount = healthDistribution.outOfStock + healthDistribution.critical
+    if (criticalCount > 0) {
+      const exampleProduct = biProducts.find((p) => p.status === 'out_of_stock' || p.status === 'critical')
+      aiInsights.push(
+        `Critical Alert: ${criticalCount} product(s) require immediate purchasing action. e.g., "${exampleProduct?.name}" is ${exampleProduct?.status === 'out_of_stock' ? 'completely out of stock' : `facing a stockout risk in less than ${exampleProduct?.supplier_lead_time_days} days`}.`
+      )
+    } else {
+      aiInsights.push('All stock levels are healthy or low risk. No immediate stockouts predicted.')
+    }
+
+    // 2. Overstock / Capital tied up insight
+    const overstockProducts = biProducts.filter((p) => p.status === 'overstock')
+    if (overstockProducts.length > 0) {
+      const totalOverstockVal = overstockProducts.reduce((sum, p) => sum + p.capitalAtRisk, 0)
+      const worstOverstock = [...overstockProducts].sort((a, b) => b.capitalAtRisk - a.capitalAtRisk)[0]
+      aiInsights.push(
+        `Capital Efficiency: ₹${totalOverstockVal.toLocaleString('en-IN', { maximumFractionDigits: 0 })} is tied up in overstock items. Defer reordering "${worstOverstock.name}" which holds ~${worstOverstock.daysOfStock.toFixed(0)} days of supply.`
+      )
+    }
+
+    // 3. Expiry risk insight
+    if (expiryRisks.length > 0) {
+      const totalWastageRisk = expiryRisks.reduce((sum, p) => sum + p.capitalAtRisk, 0)
+      aiInsights.push(
+        `Expiry Risk: ${expiryRisks.length} product(s) have supply timelines exceeding shelf life, representing a potential wastage of ₹${totalWastageRisk.toLocaleString('en-IN', { maximumFractionDigits: 0 })}. Prioritize sales velocity promotions for "${expiryRisks[0].name}".`
+      )
+    }
+
+    // 4. Sales performance insight
+    if (topProducts.length > 0) {
+      aiInsights.push(
+        `Top Performer: "${topProducts[0].name}" is the top contributor in the selected window, selling ${topProducts[0].salesVolume} units and generating ₹${topProducts[0].salesRevenue.toLocaleString('en-IN', { maximumFractionDigits: 0 })}. Demand trajectory is ${topProducts[0].trend}.`
+      )
+    }
+
+    // 5. Growth trajectory insight
+    const growingCount = trendCounts.Increasing
+    if (growingCount > 0) {
+      const worstLowStockGrowing = biProducts
+        .filter((p) => p.trend === 'Increasing' && (p.status === 'low' || p.status === 'critical'))
+        .sort((a, b) => a.daysOfStock - b.daysOfStock)[0]
+
+      if (worstLowStockGrowing) {
+        aiInsights.push(
+          `Demand Shift: ${growingCount} product(s) show upward demand. Danger alert: "${worstLowStockGrowing.name}" is trending up but has only ${worstLowStockGrowing.daysOfStock.toFixed(0)} days of stock left.`
+        )
+      } else {
+        const topGrower = growthProducts[0]
+        aiInsights.push(
+          `Demand Shift: ${growingCount} product(s) show upward demand trends, led by "${topGrower.name}" with a ${topGrower.confidenceScore.toFixed(0)}% confidence score.`
+        )
+      }
+    }
+
+    // Fill minimum 4 insights if empty
+    while (aiInsights.length < 4) {
+      aiInsights.push('Verify regular sales data updates to ensure real-time analytics accuracy.')
+    }
+
+    return {
+      data: {
+        kpis: {
+          totalProducts,
+          inventoryUnits,
+          inventoryValue,
+          salesVolume,
+          salesRevenue,
+          forecastUnits7Days,
+          reorderValue
+        },
+        healthDistribution,
+        salesAnalytics: {
+          trend: trendArray,
+          peakSalesDay,
+          avgDailyVelocity
+        },
+        topProducts,
+        slowProducts,
+        forecastInsights: {
+          trendCounts,
+          growthProducts
+        },
+        needsAttention,
+        purchasing,
+        expiryRisks,
+        aiInsights
+      }
+    }
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : 'Internal server error occurred.'
+    console.error('Server error in fetchDashboardAnalytics:', err)
+    return { error: errorMsg }
+  }
+}

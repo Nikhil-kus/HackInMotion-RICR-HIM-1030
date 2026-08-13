@@ -205,12 +205,31 @@ export async function calculateAndStoreAlerts() {
     if (list) list.push({ forecast_date: f.forecast_date, predicted_demand: f.predicted_demand })
   })
 
-  // Evaluate alerts for every product in memory
+  // Fetch active purchase order items to account for incoming on-order stock
+  const { data: activePOItems } = await supabase
+    .from('purchase_order_items')
+    .select('product_id, ordered_quantity, received_quantity, purchase_orders!inner(status)')
+    .eq('user_id', user.id)
+    .in('purchase_orders.status', ['draft', 'ordered', 'partially_received'])
+
+  const onOrderMap = new Map<string, number>()
+  interface RawPOItem {
+    product_id: string
+    ordered_quantity: number
+    received_quantity: number
+  }
+  ;(activePOItems as unknown as RawPOItem[] || []).forEach((item) => {
+    const remaining = Math.max(0, item.ordered_quantity - item.received_quantity)
+    onOrderMap.set(item.product_id, (onOrderMap.get(item.product_id) || 0) + remaining)
+  })
+
+  // Evaluate alerts for every product in memory (current stock + on-order stock)
   const results: AlertEngineResult[] = products.map((product) => {
+    const onOrderQty = onOrderMap.get(product.id) || 0
     return evaluateProductAlert({
       productId: product.id,
       productName: product.name,
-      currentStock: product.current_stock,
+      currentStock: product.current_stock + onOrderQty,
       price: Number(product.price),
       leadTimeDays: product.supplier_lead_time_days,
       salesHistory: salesMap.get(product.id) || [],

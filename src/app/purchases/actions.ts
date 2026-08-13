@@ -296,9 +296,10 @@ export async function fetchReorderRecommendations(): Promise<{ data?: ReorderRec
     suppliers: { name: string } | null
   }
 
-  // Deduplicate by product_id (take the latest/first)
+  // Deduplicate by product_id (take the latest/first) and exclude zero-quantity recommendations
   const seen = new Set<string>()
   const deduped = (alerts as unknown as RawAlert[]).filter((a) => {
+    if (a.recommended_quantity <= 0) return false
     if (seen.has(a.product_id)) return false
     seen.add(a.product_id)
     return true

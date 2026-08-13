@@ -309,7 +309,7 @@ export function evaluateProductAlert(input: AlertEngineInput): AlertEngineResult
   const daysRemaining = calculateDaysOfStockRemaining(input.currentStock, avgDailyDemand)
   
   const status = calculateStockStatus(input.currentStock, daysRemaining, input.leadTimeDays, input.shelfLifeDays)
-  const priority = calculateAlertPriority(status)
+  let priority = calculateAlertPriority(status)
   const reorderPoint = calculateReorderPoint(avgDailyDemand, input.leadTimeDays)
   
   const reorderDetail = calculateDetailedReorder(
@@ -340,6 +340,13 @@ export function evaluateProductAlert(input: AlertEngineInput): AlertEngineResult
   if (status === 'out_of_stock') alertType = 'stockout'
   else if (status === 'overstock') alertType = 'overstock'
   else if (status === 'critical' || status === 'low') alertType = 'reorder'
+
+  // If recommended reorder quantity is 0 or less (e.g. due to shelf-life cap or sufficient stock),
+  // suppress reorder alert so the product is not flagged for purchasing.
+  if (alertType === 'reorder' && recommendedReorderQuantity <= 0) {
+    alertType = 'none'
+    priority = 'none'
+  }
 
   return {
     productId: input.productId,
