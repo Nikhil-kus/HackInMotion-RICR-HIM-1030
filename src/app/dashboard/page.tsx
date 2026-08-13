@@ -2,6 +2,7 @@ import { createClient } from '@/utils/supabase/server'
 import { redirect } from 'next/navigation'
 import { generateProductForecast } from '@/lib/forecasting/engine'
 import { calculateAndStoreAlerts } from '@/app/alerts/actions'
+import { fetchPurchaseMetrics } from '@/app/purchases/actions'
 import DashboardLayout from '@/components/DashboardLayout'
 import Link from 'next/link'
 
@@ -98,6 +99,10 @@ export default async function DashboardPage() {
   // Needs Attention items (critical severity alerts)
   const needsAttentionList = activeAlerts.filter((a) => a.severity === 'critical')
 
+  // Purchase metrics (Phase 8)
+  const purchaseMetricsResult = await fetchPurchaseMetrics()
+  const purchaseMetrics = purchaseMetricsResult.data ?? { draftCount: 0, pendingCount: 0, pendingValue: 0 }
+
   return (
     <DashboardLayout userEmail={user.email}>
       <div className="space-y-6">
@@ -170,6 +175,37 @@ export default async function DashboardPage() {
           <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm">
             <span className="text-gray-500 text-sm font-medium">Total Recommended Reorder Units</span>
             <span className="block text-3xl font-bold text-blue-600 mt-2">{totalRecommendedReorderUnits}</span>
+          </div>
+        </div>
+
+        {/* Purchase Metrics (Phase 8) */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm flex flex-col justify-between">
+            <div>
+              <span className="text-gray-500 text-sm font-medium">Draft Purchase Orders</span>
+              <span className="block text-3xl font-bold text-gray-700 mt-2">{purchaseMetrics.draftCount}</span>
+            </div>
+            <div className="mt-3">
+              <Link href="/purchases" className="text-xs text-blue-600 font-medium hover:underline">Create purchase order →</Link>
+            </div>
+          </div>
+          <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm flex flex-col justify-between">
+            <div>
+              <span className="text-gray-500 text-sm font-medium">Pending Purchase Orders</span>
+              <span className="block text-3xl font-bold text-blue-600 mt-2">{purchaseMetrics.pendingCount}</span>
+            </div>
+            <div className="mt-3">
+              <Link href="/purchases" className="text-xs text-blue-600 font-medium hover:underline">Track orders →</Link>
+            </div>
+          </div>
+          <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm flex flex-col justify-between">
+            <div>
+              <span className="text-gray-500 text-sm font-medium">Purchase Value Pending</span>
+              <span className="block text-2xl font-bold text-green-700 mt-2">
+                ₹{purchaseMetrics.pendingValue.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </span>
+            </div>
+            <span className="text-xs text-gray-400 font-medium mt-3 block">Ordered + partial orders</span>
           </div>
         </div>
 
