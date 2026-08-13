@@ -15,6 +15,47 @@ export interface Sale {
   product_name?: string
 }
 
+export interface RetailCartItem {
+  product_id: string
+  quantity: number
+}
+
+export async function createRetailSale(items: RetailCartItem[]) {
+  if (!items || items.length === 0) {
+    return { error: 'Cart is empty.' }
+  }
+
+  const supabase = await createClient()
+
+  // Get current user to verify session
+  const { data: { user }, error: userError } = await supabase.auth.getUser()
+  if (userError || !user) {
+    return { error: 'Unauthorized. Please log in.' }
+  }
+
+  // Execute atomic PL/pgSQL PostgreSQL transaction via RPC
+  const { data, error } = await supabase.rpc('create_retail_sale', {
+    p_items: items,
+  })
+
+  if (error) {
+    console.error('Error executing retail sale transaction:', error)
+    return { error: error.message }
+  }
+
+  revalidatePath('/sales')
+  revalidatePath('/inventory')
+  revalidatePath('/dashboard')
+  revalidatePath('/alerts')
+
+  return {
+    success: true,
+    totalItems: data?.total_items || items.length,
+    totalUnits: data?.total_units || 0,
+    totalRevenue: Number(data?.total_revenue || 0),
+  }
+}
+
 export async function fetchSalesData() {
   const supabase = await createClient()
 

@@ -1,6 +1,7 @@
 import { createClient } from '@/utils/supabase/server'
 import { redirect } from 'next/navigation'
 import { fetchSalesData } from './actions'
+import { fetchProducts, fetchAllAliases } from '@/app/inventory/actions'
 import SalesClient from './sales-client'
 import DashboardLayout from '@/components/DashboardLayout'
 
@@ -13,21 +14,29 @@ export default async function SalesPage() {
     redirect('/auth/login')
   }
 
-  // Fetch sales records and summary stats
-  const { data: sales, stats, error: salesError } = await fetchSalesData()
+  // Fetch sales records, summary stats, products, and aliases in parallel
+  const [salesResult, productsResult, aliasesResult] = await Promise.all([
+    fetchSalesData(),
+    fetchProducts(),
+    fetchAllAliases(),
+  ])
 
-  // Fetch simple list of user's products for matching in the CSV import
-  const { data: products } = await supabase
-    .from('products')
-    .select('id, name, price')
-    .order('name', { ascending: true })
+  const { data: sales, stats, error: salesError } = salesResult
+  const products = productsResult.data || []
+  const aliases = aliasesResult.data || []
+
+  // Merge aliases into product records for multi-field search (name, brand, barcode, alias)
+  const productsWithAliases = products.map((p) => ({
+    ...p,
+    aliases: aliases.filter((a) => a.product_id === p.id),
+  }))
 
   return (
     <DashboardLayout userEmail={user.email}>
       <SalesClient
         initialSales={sales || []}
         initialStats={stats || { totalRecords: 0, totalUnits: 0, totalRevenue: 0 }}
-        products={products || []}
+        products={productsWithAliases}
         fetchError={salesError}
       />
     </DashboardLayout>

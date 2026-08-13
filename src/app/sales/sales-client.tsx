@@ -2,13 +2,8 @@
 
 import React, { useState, useMemo, useRef } from 'react'
 import Papa from 'papaparse'
-import { Sale, importSales, generateDemoSales } from './actions'
-
-interface ProductSimple {
-  id: string
-  name: string
-  price: number
-}
+import { Sale, importSales, generateDemoSales, createRetailSale } from './actions'
+import type { Product } from '@/app/inventory/types'
 
 interface SalesClientProps {
   initialSales: Sale[]
@@ -17,7 +12,7 @@ interface SalesClientProps {
     totalUnits: number
     totalRevenue: number
   }
-  products: ProductSimple[]
+  products: Product[]
   fetchError?: string | null
 }
 
@@ -41,6 +36,11 @@ interface ValidatedRecord {
   errors: string[]
 }
 
+interface CartItem {
+  product: Product
+  quantity: number
+}
+
 function formatDate(dateStr: string) {
   const d = new Date(dateStr)
   if (isNaN(d.getTime())) return dateStr
@@ -50,9 +50,24 @@ function formatDate(dateStr: string) {
   return `${day}/${month}/${year}`
 }
 
+function formatPackInfo(product: Product): string | null {
+  const parts: string[] = []
+  if (product.brand) parts.push(product.brand)
+  if (product.unit) parts.push(product.unit)
+  if (product.pack_size != null && product.pack_size_unit) {
+    parts.push(
+      `${product.pack_size % 1 === 0 ? product.pack_size.toFixed(0) : product.pack_size} ${product.pack_size_unit}`
+    )
+  }
+  return parts.length > 0 ? parts.join(' · ') : null
+}
+
 export default function SalesClient({ initialSales, initialStats, products, fetchError }: SalesClientProps) {
   const [sales] = useState<Sale[]>(initialSales)
   const [stats] = useState(initialStats)
+  const [activeTab, setActiveTab] = useState<'new_sale' | 'history' | 'csv'>('new_sale')
+
+  // History filters
   const [dateFilter, setDateFilter] = useState({ start: '', end: '' })
   const [productFilter, setProductFilter] = useState('')
   const [pending, setPending] = useState(false)
@@ -60,6 +75,10 @@ export default function SalesClient({ initialSales, initialStats, products, fetc
   // Messages state
   const [errorMsg, setErrorMsg] = useState<string | null>(fetchError || null)
   const [successMsg, setSuccessMsg] = useState<string | null>(null)
+
+  // ── New Sale / POS State
+  const [posSearch, setPosSearch] = useState('')
+  const [cart, setCart] = useState<CartItem[]>([])
 
   // CSV states
   const [csvRecords, setCsvRecords] = useState<ValidatedRecord[]>([])
@@ -80,26 +99,125 @@ export default function SalesClient({ initialSales, initialStats, products, fetc
     }, 6000)
   }
 
-  // Helper to map product names case-insensitively
+  // ── Helper map for CSV matching
   const productMap = useMemo(() => {
-    const map = new Map<string, ProductSimple>()
+    const map = new Map<string, Product>()
     products.forEach((p) => {
       map.set(p.name.trim().toLowerCase(), p)
     })
     return map
   }, [products])
 
-  // Filtered sales list
+  // ── Multi-field Search for New Sale (Name, Brand, Barcode, Aliases)
+  const filteredPosProducts = useMemo(() => {
+    const q = posSearch.toLowerCase().trim()
+    if (!q) return products
+
+    return products.filter((product) => {
+      if (product.name.toLowerCase().includes(q)) return true
+      if (product.brand?.toLowerCase().includes(q)) return true
+      if (product.barcode?.toLowerCase().includes(q)) return true
+      if (product.aliases?.some((a) => a.alias.toLowerCase().includes(q))) return true
+      return false
+    })
+  }, [products, posSearch])
+
+  // ── Cart Handlers
+  const addToCart = (product: Product) => {
+    if (product.current_stock <= 0) {
+      showToast(`"${product.name}" is out of stock.`, true)
+      return
+    }
+
+    setCart((prev) => {
+      const existing = prev.find((item) => item.product.id === product.id)
+      if (existing) {
+        if (existing.quantity >= product.current_stock) {
+          showToast(`Cannot add more than available stock (${product.current_stock}).`, true)
+          return prev
+        }
+        return prev.map((item) =>
+          item.product.id === product.id ? { ...item, quantity: item.quantity + 1 } : item
+        )
+      }
+      return [...prev, { product, quantity: 1 }]
+    })
+  }
+
+  const updateCartQuantity = (productId: string, newQty: number) => {
+    const item = cart.find((c) => c.product.id === productId)
+    if (!item) return
+
+    if (newQty <= 0) {
+      removeFromCart(productId)
+      return
+    }
+
+    if (newQty > item.product.current_stock) {
+      showToast(`Cannot exceed available stock (${item.product.current_stock} units).`, true)
+      return
+    }
+
+    setCart((prev) =>
+      prev.map((c) => (c.product.id === productId ? { ...c, quantity: newQty } : c))
+    )
+  }
+
+  const removeFromCart = (productId: string) => {
+    setCart((prev) => prev.filter((c) => c.product.id !== productId))
+  }
+
+  const clearCart = () => {
+    setCart([])
+  }
+
+  // Grand totals for cart
+  const cartTotals = useMemo(() => {
+    const totalItems = cart.length
+    const totalUnits = cart.reduce((sum, c) => sum + c.quantity, 0)
+    const grandTotal = cart.reduce((sum, c) => sum + c.quantity * c.product.price, 0)
+    return { totalItems, totalUnits, grandTotal }
+  }, [cart])
+
+  // Complete Retail Sale trigger (Atomic PL/pgSQL RPC execution)
+  const handleCompleteSale = async () => {
+    if (cart.length === 0) return
+
+    setPending(true)
+    setErrorMsg(null)
+
+    const cartPayload = cart.map((item) => ({
+      product_id: item.product.id,
+      quantity: item.quantity,
+    }))
+
+    const result = await createRetailSale(cartPayload)
+
+    if (result.error) {
+      showToast(result.error, true)
+      setPending(false)
+    } else {
+      showToast(
+        `Sale completed! Deducted stock and recorded ₹${(result.totalRevenue ?? 0).toFixed(
+          2
+        )} (${result.totalUnits ?? 0} units).`
+      )
+      setCart([])
+      setPending(false)
+      window.location.reload()
+    }
+  }
+
+  // ── Filtered Sales History List
   const filteredSales = useMemo(() => {
     return sales.filter((sale) => {
       const matchesProduct = productFilter === '' || sale.product_id === productFilter
-      
+
       let matchesDate = true
       if (dateFilter.start) {
         matchesDate = matchesDate && new Date(sale.sale_date) >= new Date(dateFilter.start)
       }
       if (dateFilter.end) {
-        // Set end date to end of day
         const endOfDay = new Date(dateFilter.end)
         endOfDay.setHours(23, 59, 59, 999)
         matchesDate = matchesDate && new Date(sale.sale_date) <= endOfDay
@@ -109,7 +227,7 @@ export default function SalesClient({ initialSales, initialStats, products, fetc
     })
   }, [sales, productFilter, dateFilter])
 
-  // Split parsed records into valid/invalid
+  // Split parsed CSV records into valid/invalid
   const { validRecords, invalidRecords } = useMemo(() => {
     const valid: ValidatedRecord[] = []
     const invalid: ValidatedRecord[] = []
@@ -134,7 +252,6 @@ export default function SalesClient({ initialSales, initialStats, products, fetc
     setCsvRecords([])
     setHasParsed(false)
 
-    // Check file extension / type
     if (file.type !== 'text/csv' && !file.name.endsWith('.csv')) {
       showToast('Invalid file format. Please upload a valid CSV file.', true)
       if (fileInputRef.current) fileInputRef.current.value = ''
@@ -152,31 +269,31 @@ export default function SalesClient({ initialSales, initialStats, products, fetc
 
         const headers = results.meta.fields || []
         const required = ['date', 'product', 'quantity', 'revenue']
-        const missing = required.filter(h => !headers.some(fh => fh.trim().toLowerCase() === h))
+        const missing = required.filter(
+          (h) => !headers.some((fh) => fh.trim().toLowerCase() === h)
+        )
 
         if (missing.length > 0) {
           showToast(`Missing required columns: ${missing.join(', ')}`, true)
           return
         }
 
-        // Validate each row
         const validated: ValidatedRecord[] = results.data.map((row, index) => {
-          const rowNumber = index + 2 // 1-based, +1 for header row
+          const rowNumber = index + 2
           const errors: string[] = []
 
-          // Extract columns case-insensitively
-          const dateKey = headers.find(h => h.trim().toLowerCase() === 'date') || 'date'
-          const productKey = headers.find(h => h.trim().toLowerCase() === 'product') || 'product'
-          const quantityKey = headers.find(h => h.trim().toLowerCase() === 'quantity') || 'quantity'
-          const revenueKey = headers.find(h => h.trim().toLowerCase() === 'revenue') || 'revenue'
+          const dateKey = headers.find((h) => h.trim().toLowerCase() === 'date') || 'date'
+          const productKey = headers.find((h) => h.trim().toLowerCase() === 'product') || 'product'
+          const quantityKey =
+            headers.find((h) => h.trim().toLowerCase() === 'quantity') || 'quantity'
+          const revenueKey = headers.find((h) => h.trim().toLowerCase() === 'revenue') || 'revenue'
 
           const rawDate = row[dateKey]?.toString().trim() || ''
           const rawProduct = row[productKey]?.toString().trim() || ''
           const rawQuantity = row[quantityKey]?.toString().trim() || ''
           const rawRevenue = row[revenueKey]?.toString().trim() || ''
 
-          // 1. Validate product name matching
-          let matchedProduct: ProductSimple | undefined
+          let matchedProduct: Product | undefined
           if (!rawProduct) {
             errors.push('Product name is missing.')
           } else {
@@ -186,7 +303,6 @@ export default function SalesClient({ initialSales, initialStats, products, fetc
             }
           }
 
-          // 2. Validate date
           const dateObj = new Date(rawDate)
           if (!rawDate) {
             errors.push('Date is missing.')
@@ -194,7 +310,6 @@ export default function SalesClient({ initialSales, initialStats, products, fetc
             errors.push(`Invalid date format: "${rawDate}"`)
           }
 
-          // 3. Validate quantity
           const quantity = parseInt(rawQuantity, 10)
           if (!rawQuantity) {
             errors.push('Quantity is missing.')
@@ -202,7 +317,6 @@ export default function SalesClient({ initialSales, initialStats, products, fetc
             errors.push(`Quantity must be a positive integer: "${rawQuantity}"`)
           }
 
-          // 4. Validate revenue
           const revenue = parseFloat(rawRevenue)
           if (!rawRevenue) {
             errors.push('Revenue is missing.')
@@ -221,7 +335,7 @@ export default function SalesClient({ initialSales, initialStats, products, fetc
             revenue,
             unitPrice,
             isValid: errors.length === 0,
-            errors
+            errors,
           }
         })
 
@@ -230,7 +344,7 @@ export default function SalesClient({ initialSales, initialStats, products, fetc
       },
       error: (error) => {
         showToast(`Failed to parse CSV: ${error.message}`, true)
-      }
+      },
     })
   }
 
@@ -244,7 +358,7 @@ export default function SalesClient({ initialSales, initialStats, products, fetc
       product_id: r.productId,
       sale_date: r.date,
       quantity: r.quantity,
-      unit_price: r.unitPrice
+      unit_price: r.unitPrice,
     }))
 
     const result = await importSales(payload)
@@ -258,12 +372,9 @@ export default function SalesClient({ initialSales, initialStats, products, fetc
           result.skippedCount ? `${result.skippedCount} duplicates skipped.` : ''
         }`
       )
-      // Reset upload state
       setCsvRecords([])
       setHasParsed(false)
       if (fileInputRef.current) fileInputRef.current.value = ''
-      
-      // Reload window to update table and stats
       window.location.reload()
     }
   }
@@ -278,7 +389,8 @@ export default function SalesClient({ initialSales, initialStats, products, fetc
     setPending(true)
     setErrorMsg(null)
 
-    const result = await generateDemoSales(products)
+    const simpleProducts = products.map((p) => ({ id: p.id, name: p.name, price: p.price }))
+    const result = await generateDemoSales(simpleProducts)
 
     if (result.error) {
       showToast(result.error, true)
@@ -291,246 +403,501 @@ export default function SalesClient({ initialSales, initialStats, products, fetc
 
   return (
     <div className="space-y-6">
-      {/* Page Title */}
-      <div>
-        <h2 className="text-2xl font-bold text-gray-900">Sales Data Import</h2>
-        <p className="text-gray-500 text-sm mt-1">Import transactions via CSV or populate deterministic test sets.</p>
+      {/* Header & Modes/Tabs */}
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-gray-200 pb-4">
+        <div>
+          <h2 className="text-2xl font-bold text-gray-900">Sales Management</h2>
+          <p className="text-gray-500 text-sm mt-1">
+            Fast Kirana POS counter, transactions history, and CSV data imports.
+          </p>
+        </div>
+
+        {/* Tab Switcher */}
+        <div className="flex bg-gray-100 p-1 rounded-xl">
+          <button
+            onClick={() => setActiveTab('new_sale')}
+            className={`px-4 py-2 text-sm font-semibold rounded-lg transition-colors flex items-center gap-2 ${
+              activeTab === 'new_sale'
+                ? 'bg-white text-blue-600 shadow-sm'
+                : 'text-gray-600 hover:text-gray-900'
+            }`}
+          >
+            <span>🧾</span> New Sale (POS)
+          </button>
+          <button
+            onClick={() => setActiveTab('history')}
+            className={`px-4 py-2 text-sm font-semibold rounded-lg transition-colors flex items-center gap-2 ${
+              activeTab === 'history'
+                ? 'bg-white text-blue-600 shadow-sm'
+                : 'text-gray-600 hover:text-gray-900'
+            }`}
+          >
+            <span>📊</span> Sales History
+          </button>
+          <button
+            onClick={() => setActiveTab('csv')}
+            className={`px-4 py-2 text-sm font-semibold rounded-lg transition-colors flex items-center gap-2 ${
+              activeTab === 'csv'
+                ? 'bg-white text-blue-600 shadow-sm'
+                : 'text-gray-600 hover:text-gray-900'
+            }`}
+          >
+            <span>📥</span> Import CSV
+          </button>
+        </div>
       </div>
 
-      {/* KPI Stats widgets */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm">
-          <span className="text-gray-500 text-sm font-medium">Total Sales Transactions</span>
-          <span className="block text-3xl font-bold text-gray-900 mt-2">{stats.totalRecords}</span>
-        </div>
-        <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm">
-          <span className="text-gray-500 text-sm font-medium">Total Units Sold</span>
-          <span className="block text-3xl font-bold text-gray-900 mt-2">{stats.totalUnits}</span>
-        </div>
-        <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm">
-          <span className="text-gray-500 text-sm font-medium">Total Revenue</span>
-          <span className="block text-3xl font-bold text-blue-600 mt-2">₹{stats.totalRevenue.toFixed(2)}</span>
-        </div>
-      </div>
-
-      {/* Alert Messaging */}
+      {/* Notifications */}
       {errorMsg && (
         <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm flex items-center justify-between">
           <span>{errorMsg}</span>
-          <button onClick={() => setErrorMsg(null)} className="text-red-500 hover:text-red-700">✕</button>
+          <button onClick={() => setErrorMsg(null)} className="text-red-500 hover:text-red-700">
+            ✕
+          </button>
         </div>
       )}
       {successMsg && (
         <div className="bg-emerald-50 border border-emerald-200 text-emerald-700 px-4 py-3 rounded-lg text-sm flex items-center justify-between">
           <span>{successMsg}</span>
-          <button onClick={() => setSuccessMsg(null)} className="text-emerald-500 hover:text-emerald-700">✕</button>
+          <button onClick={() => setSuccessMsg(null)} className="text-emerald-500 hover:text-emerald-700">
+            ✕
+          </button>
         </div>
       )}
 
-      {/* CSV & Demo Upload Cards */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* CSV Import Dropzone */}
-        <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm lg:col-span-2 space-y-4">
-          <h3 className="text-lg font-semibold text-gray-900">Import Sales CSV</h3>
-          
-          <div className="border-2 border-dashed border-gray-200 rounded-lg p-6 text-center hover:border-blue-500 transition-colors relative">
-            <svg className="w-8 h-8 text-gray-400 mx-auto mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
-            </svg>
-            <p className="text-sm font-medium text-gray-900">Click to select CSV File</p>
-            <p className="text-xs text-gray-500 mt-1">Columns required: date, product, quantity, revenue</p>
-            <input
-              type="file"
-              ref={fileInputRef}
-              accept=".csv"
-              onChange={handleCSVUpload}
-              className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-            />
+      {/* ── TAB 1: NEW SALE (POS COUNTER) ────────────────────────────────────── */}
+      {activeTab === 'new_sale' && (
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+          {/* Left: Product Search & Results (7 cols) */}
+          <div className="lg:col-span-7 space-y-4">
+            <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
+              <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
+                Fast Product Search (Name, Brand, Barcode, Alias)
+              </label>
+              <div className="relative">
+                <input
+                  type="text"
+                  placeholder="Type product name, brand, barcode, or Hindi alias (e.g. Amul, 890..., दूध)…"
+                  value={posSearch}
+                  onChange={(e) => setPosSearch(e.target.value)}
+                  className="w-full pl-10 pr-4 py-2.5 border border-gray-300 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  autoFocus
+                />
+                <span className="absolute left-3 top-3 text-gray-400">
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                  </svg>
+                </span>
+                {posSearch && (
+                  <button
+                    onClick={() => setPosSearch('')}
+                    className="absolute right-3 top-2.5 text-gray-400 hover:text-gray-600 text-sm"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Results Grid */}
+            <div className="space-y-2 max-h-[65vh] overflow-y-auto pr-1">
+              {filteredPosProducts.length === 0 ? (
+                <div className="bg-white border border-gray-200 rounded-xl p-8 text-center shadow-sm">
+                  <p className="text-gray-500 text-sm">No products found matching &quot;{posSearch}&quot;</p>
+                </div>
+              ) : (
+                filteredPosProducts.map((product) => {
+                  const packInfo = formatPackInfo(product)
+                  const cartItem = cart.find((c) => c.product.id === product.id)
+                  const isOut = product.current_stock <= 0
+                  const isLow = product.current_stock > 0 && product.current_stock < 10
+
+                  return (
+                    <div
+                      key={product.id}
+                      className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm flex items-center justify-between gap-4 hover:border-blue-300 transition-colors"
+                    >
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <h4 className="font-semibold text-gray-900 text-base truncate">{product.name}</h4>
+                          <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 border border-gray-200">
+                            {product.category}
+                          </span>
+                        </div>
+
+                        {packInfo && <p className="text-xs text-gray-500 mt-0.5">{packInfo}</p>}
+
+                        {product.barcode && (
+                          <p className="text-xs text-gray-400 font-mono mt-0.5">Barcode: {product.barcode}</p>
+                        )}
+
+                        <div className="flex items-center gap-3 mt-2">
+                          <span className="text-lg font-bold text-emerald-700">₹{product.price.toFixed(2)}</span>
+                          <span
+                            className={`text-xs px-2 py-0.5 rounded-full font-medium border ${
+                              isOut
+                                ? 'bg-red-100 text-red-800 border-red-200'
+                                : isLow
+                                ? 'bg-amber-100 text-amber-800 border-amber-200'
+                                : 'bg-emerald-100 text-emerald-800 border-emerald-200'
+                            }`}
+                          >
+                            {isOut ? 'Out of Stock' : isLow ? `Low Stock: ${product.current_stock}` : `Stock: ${product.current_stock}`}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Add Button or Stepper */}
+                      <div>
+                        {cartItem ? (
+                          <div className="flex items-center border border-blue-600 rounded-lg bg-blue-50 overflow-hidden">
+                            <button
+                              onClick={() => updateCartQuantity(product.id, cartItem.quantity - 1)}
+                              className="px-3 py-1.5 text-blue-700 font-bold hover:bg-blue-100"
+                            >
+                              -
+                            </button>
+                            <span className="px-3 text-sm font-bold text-blue-900">{cartItem.quantity}</span>
+                            <button
+                              onClick={() => updateCartQuantity(product.id, cartItem.quantity + 1)}
+                              disabled={cartItem.quantity >= product.current_stock}
+                              className="px-3 py-1.5 text-blue-700 font-bold hover:bg-blue-100 disabled:opacity-30"
+                            >
+                              +
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            onClick={() => addToCart(product)}
+                            disabled={isOut}
+                            className="px-4 py-2 bg-blue-600 text-white text-sm font-semibold rounded-lg hover:bg-blue-700 disabled:opacity-40 transition-colors shadow-sm"
+                          >
+                            + Add
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )
+                })
+              )}
+            </div>
           </div>
 
-          {hasParsed && (
-            <div className="space-y-4">
-              <div className="flex items-center justify-between text-sm pt-2">
-                <span className="font-semibold text-gray-900">CSV Results Preview:</span>
-                <div className="space-x-4">
-                  <span className="text-emerald-600 font-medium">Valid: {validRecords.length}</span>
-                  <span className="text-red-600 font-medium">Invalid: {invalidRecords.length}</span>
+          {/* Right: Cart & Checkout Counter (5 cols) */}
+          <div className="lg:col-span-5">
+            <div className="bg-white border border-gray-200 rounded-xl shadow-md p-5 sticky top-4 space-y-4">
+              <div className="flex items-center justify-between border-b border-gray-100 pb-3">
+                <div>
+                  <h3 className="font-bold text-gray-900 text-lg flex items-center gap-2">
+                    🛒 Counter Cart
+                  </h3>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    {cartTotals.totalItems} product{cartTotals.totalItems === 1 ? '' : 's'} · {cartTotals.totalUnits} unit{cartTotals.totalUnits === 1 ? '' : 's'}
+                  </p>
                 </div>
+                {cart.length > 0 && (
+                  <button
+                    onClick={clearCart}
+                    className="text-xs text-red-600 hover:text-red-800 font-medium transition-colors"
+                  >
+                    Clear Cart
+                  </button>
+                )}
               </div>
 
-              {/* Invalid Records Error Log */}
-              {invalidRecords.length > 0 && (
-                <div className="bg-red-50 border border-red-200 rounded-lg p-4 max-h-48 overflow-y-auto space-y-2">
-                  <span className="text-xs font-bold text-red-800 uppercase tracking-wider">Validation Errors to Resolve:</span>
-                  <ul className="text-xs text-red-700 space-y-1 list-disc pl-4">
-                    {invalidRecords.map((rec) => (
-                      <li key={rec.rowNumber}>
-                        Row {rec.rowNumber} ({rec.productName || 'Unnamed'}): {rec.errors.join(', ')}
-                      </li>
-                    ))}
-                  </ul>
+              {/* Cart List */}
+              <div className="space-y-3 max-h-[45vh] overflow-y-auto pr-1">
+                {cart.length === 0 ? (
+                  <div className="py-10 text-center border-2 border-dashed border-gray-200 rounded-lg">
+                    <p className="text-gray-400 text-sm">Cart is empty.</p>
+                    <p className="text-xs text-gray-400 mt-1">Search and click &quot;Add&quot; to build sale.</p>
+                  </div>
+                ) : (
+                  cart.map((item) => {
+                    const packInfo = formatPackInfo(item.product)
+                    const lineTotal = item.quantity * item.product.price
+
+                    return (
+                      <div key={item.product.id} className="p-3 bg-gray-50 rounded-lg border border-gray-200 space-y-2">
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <h5 className="font-medium text-gray-900 text-sm leading-snug">{item.product.name}</h5>
+                            {packInfo && <p className="text-xs text-gray-500">{packInfo}</p>}
+                          </div>
+                          <button
+                            onClick={() => removeFromCart(item.product.id)}
+                            className="text-gray-400 hover:text-red-600 text-xs p-1"
+                            title="Remove item"
+                          >
+                            ✕
+                          </button>
+                        </div>
+
+                        <div className="flex items-center justify-between pt-1">
+                          {/* Stepper */}
+                          <div className="flex items-center border border-gray-300 rounded bg-white overflow-hidden">
+                            <button
+                              onClick={() => updateCartQuantity(item.product.id, item.quantity - 1)}
+                              className="px-2 py-0.5 text-gray-600 hover:bg-gray-100 text-xs font-bold"
+                            >
+                              -
+                            </button>
+                            <input
+                              type="number"
+                              min="1"
+                              max={item.product.current_stock}
+                              value={item.quantity}
+                              onChange={(e) => {
+                                const val = parseInt(e.target.value, 10)
+                                if (!isNaN(val)) updateCartQuantity(item.product.id, val)
+                              }}
+                              className="w-12 text-center text-xs font-bold text-gray-900 border-none focus:outline-none"
+                            />
+                            <button
+                              onClick={() => updateCartQuantity(item.product.id, item.quantity + 1)}
+                              disabled={item.quantity >= item.product.current_stock}
+                              className="px-2 py-0.5 text-gray-600 hover:bg-gray-100 text-xs font-bold disabled:opacity-30"
+                            >
+                              +
+                            </button>
+                          </div>
+
+                          <div className="text-right">
+                            <span className="text-xs text-gray-500 mr-2">@ ₹{item.product.price.toFixed(2)}</span>
+                            <span className="font-bold text-gray-900 text-sm">₹{lineTotal.toFixed(2)}</span>
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  })
+                )}
+              </div>
+
+              {/* Cart Summary & Complete Sale */}
+              {cart.length > 0 && (
+                <div className="border-t border-gray-200 pt-3 space-y-3">
+                  <div className="flex items-center justify-between text-base font-bold text-gray-900">
+                    <span>Grand Total</span>
+                    <span className="text-xl text-emerald-700">₹{cartTotals.grandTotal.toFixed(2)}</span>
+                  </div>
+
+                  <button
+                    onClick={handleCompleteSale}
+                    disabled={pending}
+                    className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-base rounded-xl transition-colors shadow-md disabled:opacity-50 flex items-center justify-center gap-2"
+                  >
+                    {pending ? (
+                      <span>Processing Sale…</span>
+                    ) : (
+                      <>
+                        <span>Complete Sale</span>
+                        <span>(₹{cartTotals.grandTotal.toFixed(2)})</span>
+                      </>
+                    )}
+                  </button>
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
 
-              {/* Action Buttons */}
-              <div className="flex justify-end space-x-3 pt-2">
-                <button
-                  onClick={() => {
-                    setCsvRecords([])
-                    setHasParsed(false)
-                    if (fileInputRef.current) fileInputRef.current.value = ''
-                  }}
-                  className="px-4 py-2 border border-gray-300 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50"
-                >
-                  Clear Preview
-                </button>
-                <button
-                  onClick={handleImportSubmit}
-                  disabled={pending || validRecords.length === 0}
-                  className="px-4 py-2 border border-transparent rounded-lg text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50"
-                >
-                  {pending ? 'Importing...' : `Import ${validRecords.length} Valid Records`}
-                </button>
+      {/* ── TAB 2: SALES HISTORY ────────────────────────────────────────────── */}
+      {activeTab === 'history' && (
+        <div className="space-y-6">
+          {/* KPI Stats widgets */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm">
+              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Total Sales Records</p>
+              <h3 className="text-2xl font-bold text-gray-900 mt-1">{stats.totalRecords.toLocaleString()}</h3>
+            </div>
+            <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm">
+              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Total Units Sold</p>
+              <h3 className="text-2xl font-bold text-gray-900 mt-1">{stats.totalUnits.toLocaleString()}</h3>
+            </div>
+            <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm">
+              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Total Sales Revenue</p>
+              <h3 className="text-2xl font-bold text-emerald-600 mt-1">₹{stats.totalRevenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</h3>
+            </div>
+          </div>
+
+          {/* Filters */}
+          <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm flex flex-col md:flex-row gap-4">
+            <div className="flex-1 grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Start Date</label>
+                <input
+                  type="date"
+                  value={dateFilter.start}
+                  onChange={(e) => setDateFilter((prev) => ({ ...prev, start: e.target.value }))}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">End Date</label>
+                <input
+                  type="date"
+                  value={dateFilter.end}
+                  onChange={(e) => setDateFilter((prev) => ({ ...prev, end: e.target.value }))}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+            </div>
+            <div className="md:w-64">
+              <label className="block text-xs font-medium text-gray-600 mb-1">Filter by Product</label>
+              <select
+                value={productFilter}
+                onChange={(e) => setProductFilter(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="">All Products</option>
+                {products.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {/* Table */}
+          {filteredSales.length === 0 ? (
+            <div className="bg-white border border-gray-200 rounded-xl p-12 text-center shadow-sm">
+              <h3 className="text-lg font-medium text-gray-900">No sales transactions found</h3>
+              <p className="text-gray-500 text-sm mt-1">Try clearing filters or completing a sale in New Sale POS.</p>
+            </div>
+          ) : (
+            <div className="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="min-w-full divide-y divide-gray-200 text-sm">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-6 py-3.5 text-left font-semibold text-gray-500 uppercase tracking-wider text-xs">Date</th>
+                      <th className="px-6 py-3.5 text-left font-semibold text-gray-500 uppercase tracking-wider text-xs">Product</th>
+                      <th className="px-6 py-3.5 text-left font-semibold text-gray-500 uppercase tracking-wider text-xs">Source</th>
+                      <th className="px-6 py-3.5 text-left font-semibold text-gray-500 uppercase tracking-wider text-xs">Quantity</th>
+                      <th className="px-6 py-3.5 text-left font-semibold text-gray-500 uppercase tracking-wider text-xs">Unit Price</th>
+                      <th className="px-6 py-3.5 text-left font-semibold text-gray-500 uppercase tracking-wider text-xs">Total Revenue</th>
+                    </tr>
+                  </thead>
+                  <tbody className="bg-white divide-y divide-gray-200">
+                    {filteredSales.map((sale) => (
+                      <tr key={sale.id} className="hover:bg-gray-50/50 transition-colors">
+                        <td className="px-6 py-4 whitespace-nowrap text-gray-900">{formatDate(sale.sale_date)}</td>
+                        <td className="px-6 py-4 whitespace-nowrap font-medium text-gray-900">{sale.product_name}</td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <span
+                            className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border ${
+                              sale.source === 'retail'
+                                ? 'bg-emerald-100 text-emerald-800 border-emerald-200'
+                                : sale.source === 'csv'
+                                ? 'bg-blue-100 text-blue-800 border-blue-200'
+                                : 'bg-amber-100 text-amber-800 border-amber-200'
+                            }`}
+                          >
+                            {sale.source === 'retail' ? 'Counter POS' : sale.source === 'csv' ? 'CSV Import' : 'Demo Set'}
+                          </span>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-gray-900">{sale.quantity}</td>
+                        <td className="px-6 py-4 whitespace-nowrap text-gray-900">₹{sale.unit_price.toFixed(2)}</td>
+                        <td className="px-6 py-4 whitespace-nowrap font-bold text-gray-900">₹{(sale.quantity * sale.unit_price).toFixed(2)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             </div>
           )}
         </div>
+      )}
 
-        {/* Demo Data Card */}
-        <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm space-y-4 flex flex-col justify-between">
-          <div>
-            <h3 className="text-lg font-semibold text-gray-900">Demo Data Utility</h3>
-            <p className="text-gray-500 text-xs mt-1 leading-relaxed">
-              Populate your dashboard with 90 days of deterministic, realistic demand patterns (weekly trends, seasonality, spikes) matching your existing inventory.
+      {/* ── TAB 3: IMPORT CSV ────────────────────────────────────────────────── */}
+      {activeTab === 'csv' && (
+        <div className="space-y-6">
+          <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm space-y-4">
+            <h3 className="text-lg font-bold text-gray-900">Upload Sales CSV</h3>
+            <p className="text-sm text-gray-500">
+              CSV file must include columns: <code className="bg-gray-100 px-1 py-0.5 rounded text-gray-800">date</code>,{' '}
+              <code className="bg-gray-100 px-1 py-0.5 rounded text-gray-800">product</code>,{' '}
+              <code className="bg-gray-100 px-1 py-0.5 rounded text-gray-800">quantity</code>,{' '}
+              <code className="bg-gray-100 px-1 py-0.5 rounded text-gray-800">revenue</code>.
             </p>
-          </div>
-          <div className="space-y-3 pt-4">
-            {products.length === 0 ? (
-              <div className="text-xs text-amber-600 bg-amber-50 border border-amber-200 p-3 rounded-lg">
-                ⚠️ Create products in your Inventory page first to generate demo sales.
-              </div>
-            ) : (
-              <div className="text-xs text-gray-500 bg-gray-50 p-3 rounded-lg border border-gray-150">
-                Connected to <span className="font-semibold">{products.length} active products</span>.
-              </div>
-            )}
-            <button
-              onClick={handleDemoGenerate}
-              disabled={pending || products.length === 0}
-              className="w-full inline-flex justify-center items-center px-4 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-lg text-gray-700 bg-white hover:bg-gray-50 focus:outline-none disabled:opacity-50"
-            >
-              {pending ? 'Generating...' : 'Generate 90-Day Demo Sales'}
-            </button>
-          </div>
-        </div>
-      </div>
 
-      {/* Filters & Recent Transactions List */}
-      <div className="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
-        {/* Table Filters header */}
-        <div className="p-4 border-b border-gray-200 bg-gray-50/50 flex flex-col sm:flex-row gap-4 items-center justify-between">
-          <h3 className="text-md font-bold text-gray-900">Transaction Records</h3>
-          
-          <div className="flex flex-wrap gap-2 w-full sm:w-auto">
-            {/* Product filter */}
-            <select
-              value={productFilter}
-              onChange={(e) => setProductFilter(e.target.value)}
-              className="px-3 py-1.5 border border-gray-300 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white text-gray-900"
-            >
-              <option value="">All Products</option>
-              {products.map((p) => (
-                <option key={p.id} value={p.id}>{p.name}</option>
-              ))}
-            </select>
-            {/* Start Date */}
-            <input
-              type="date"
-              placeholder="Start Date"
-              value={dateFilter.start}
-              onChange={(e) => setDateFilter({ ...dateFilter, start: e.target.value })}
-              className="px-3 py-1.5 border border-gray-300 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900"
-            />
-            {/* End Date */}
-            <input
-              type="date"
-              placeholder="End Date"
-              value={dateFilter.end}
-              onChange={(e) => setDateFilter({ ...dateFilter, end: e.target.value })}
-              className="px-3 py-1.5 border border-gray-300 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900"
-            />
-            {/* Reset */}
-            {(productFilter || dateFilter.start || dateFilter.end) && (
+            <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center">
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".csv,text/csv"
+                onChange={handleCSVUpload}
+                className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+              />
               <button
-                onClick={() => {
-                  setProductFilter('')
-                  setDateFilter({ start: '', end: '' })
-                }}
-                className="px-3 py-1.5 bg-gray-200 text-gray-700 rounded-lg text-xs font-semibold hover:bg-gray-350"
+                onClick={handleDemoGenerate}
+                disabled={pending}
+                className="px-4 py-2 border border-gray-300 text-gray-700 hover:bg-gray-50 text-sm font-semibold rounded-lg shrink-0 transition-colors disabled:opacity-50"
               >
-                Clear Filters
+                Generate Demo Data
               </button>
-            )}
+            </div>
           </div>
-        </div>
 
-        {/* Transactions Table */}
-        {filteredSales.length === 0 ? (
-          <div className="p-8 text-center text-gray-500 text-sm">
-            No sales records found matching the active filters or database search query.
-          </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="min-w-full divide-y divide-gray-200">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th scope="col" className="px-6 py-3.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Date</th>
-                  <th scope="col" className="px-6 py-3.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Product Name</th>
-                  <th scope="col" className="px-6 py-3.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Quantity</th>
-                  <th scope="col" className="px-6 py-3.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Revenue</th>
-                  <th scope="col" className="px-6 py-3.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Source</th>
-                </tr>
-              </thead>
-              <tbody className="bg-white divide-y divide-gray-200">
-                {filteredSales.slice(0, 100).map((sale) => {
-                  const revenue = sale.quantity * sale.unit_price
-                  const sourceBadgeColors = 
-                    sale.source === 'csv' ? 'bg-blue-100 text-blue-800 border-blue-200' :
-                    sale.source === 'demo' ? 'bg-purple-100 text-purple-800 border-purple-200' :
-                    'bg-amber-100 text-amber-800 border-amber-200' // retail
-                  
-                  return (
-                    <tr key={sale.id} className="hover:bg-gray-50/50 transition-colors">
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                        {formatDate(sale.sale_date)}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 font-medium">
-                        {sale.product_name}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                        {sale.quantity}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 font-semibold">
-                        ₹{revenue.toFixed(2)}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm">
-                        <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium border ${sourceBadgeColors}`}>
-                          {sale.source}
-                        </span>
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-            {filteredSales.length > 100 && (
-              <div className="p-3 text-center text-xs text-gray-400 border-t border-gray-150">
-                Showing top 100 recent sales. Use date/product filters to narrow search.
+          {/* Validation & Preview */}
+          {hasParsed && (
+            <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h4 className="font-bold text-gray-900">CSV Validation Results</h4>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    Found {validRecords.length} valid record{validRecords.length === 1 ? '' : 's'}, {invalidRecords.length} invalid record{invalidRecords.length === 1 ? '' : 's'}.
+                  </p>
+                </div>
+
+                <button
+                  onClick={handleImportSubmit}
+                  disabled={pending || validRecords.length === 0}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold text-sm rounded-lg transition-colors disabled:opacity-40 shadow-sm"
+                >
+                  {pending ? 'Importing…' : `Import ${validRecords.length} Valid Records`}
+                </button>
               </div>
-            )}
-          </div>
-        )}
-      </div>
+
+              {/* Records preview table */}
+              <div className="overflow-x-auto border border-gray-200 rounded-lg">
+                <table className="min-w-full divide-y divide-gray-200 text-xs">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-4 py-2 text-left font-semibold text-gray-500">Row</th>
+                      <th className="px-4 py-2 text-left font-semibold text-gray-500">Date</th>
+                      <th className="px-4 py-2 text-left font-semibold text-gray-500">Product</th>
+                      <th className="px-4 py-2 text-left font-semibold text-gray-500">Qty</th>
+                      <th className="px-4 py-2 text-left font-semibold text-gray-500">Revenue</th>
+                      <th className="px-4 py-2 text-left font-semibold text-gray-500">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200">
+                    {csvRecords.map((rec) => (
+                      <tr key={rec.rowNumber} className={rec.isValid ? 'bg-emerald-50/40' : 'bg-red-50/40'}>
+                        <td className="px-4 py-2 font-mono">{rec.rowNumber}</td>
+                        <td className="px-4 py-2">{rec.date}</td>
+                        <td className="px-4 py-2 font-medium">{rec.productName}</td>
+                        <td className="px-4 py-2">{rec.quantity}</td>
+                        <td className="px-4 py-2">₹{rec.revenue}</td>
+                        <td className="px-4 py-2">
+                          {rec.isValid ? (
+                            <span className="text-emerald-700 font-semibold">Ready to Import</span>
+                          ) : (
+                            <span className="text-red-600">{rec.errors.join('; ')}</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }
