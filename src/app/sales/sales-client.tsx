@@ -4,7 +4,7 @@ import React, { useState, useMemo, useRef, useEffect } from 'react'
 import Papa from 'papaparse'
 import { Sale, importSales, generateDemoSales, createRetailSale } from './actions'
 import type { Product } from '@/app/inventory/types'
-import { parseSpokenSalesText } from '@/lib/voice-parser'
+import { parseSpokenSalesText, normalizeForMatching } from '@/lib/voice-parser'
 
 interface SalesClientProps {
   initialSales: Sale[]
@@ -144,28 +144,96 @@ export default function SalesClient({ initialSales, initialStats, products, fetc
     })
   }, [products, posSearch])
 
-  // ── Phase 10C: Product Matcher for Spoken Queries
+  // ── Phase 10C: Product Matcher for Spoken Queries (8-tier priority)
+  // Tier 1–4: exact script-level matches (highest confidence, no transliteration needed)
+  // Tier 5–8: normalized/transliterated matches (cross-script: Devanagari ↔ Latin)
   const matchProductFromQuery = (itemQuery: string): Product | null => {
-    const q = itemQuery.toLowerCase().trim()
-    if (!q) return null
+    if (!itemQuery.trim()) return null
 
-    // 1. Exact match on name, barcode, brand, or alias
+    const q = itemQuery.toLowerCase().trim()
+
+    // ── Tier 1: Exact product name match
     for (const p of products) {
       if (p.name.toLowerCase() === q) return p
-      if (p.barcode?.toLowerCase() === q) return p
-      if (p.brand?.toLowerCase() === q) return p
+    }
+
+    // ── Tier 2: Exact alias match
+    for (const p of products) {
       if (p.aliases?.some((a) => a.alias.toLowerCase() === q)) return p
     }
 
-    // 2. Substring / partial match
+    // ── Tier 3: Exact barcode match
     for (const p of products) {
-      if (p.name.toLowerCase().includes(q) || q.includes(p.name.toLowerCase())) return p
-      if (p.brand && (p.brand.toLowerCase().includes(q) || q.includes(p.brand.toLowerCase()))) return p
-      if (p.aliases?.some((a) => a.alias.toLowerCase().includes(q) || q.includes(a.alias.toLowerCase()))) return p
+      if (p.barcode?.toLowerCase() === q) return p
+    }
+
+    // ── Tier 4: Exact brand match
+    for (const p of products) {
+      if (p.brand?.toLowerCase() === q) return p
+    }
+
+    // ── Tiers 5–8 use normalizeForMatching on both sides (transliterates Devanagari → Latin)
+    const qNorm = normalizeForMatching(itemQuery)
+    if (!qNorm) return null
+
+    // ── Tier 5: Normalized exact product name match
+    for (const p of products) {
+      if (normalizeForMatching(p.name) === qNorm) return p
+    }
+
+    // ── Tier 6: Normalized exact alias match
+    for (const p of products) {
+      if (p.aliases?.some((a) => normalizeForMatching(a.alias) === qNorm)) return p
+    }
+
+    // ── Tier 7: Normalized exact brand match
+    for (const p of products) {
+      if (p.brand && normalizeForMatching(p.brand) === qNorm) return p
+    }
+
+    // ── Tier 8: Normalized substring match — query contains product name OR product name contains query.
+    // To avoid false positives, only match when either the query or the catalog field
+    // is fully contained in the other (not just any shared substring).
+    const candidates: Array<{ product: Product; score: number }> = []
+
+    for (const p of products) {
+      const pNameNorm = normalizeForMatching(p.name)
+      const pBrandNorm = p.brand ? normalizeForMatching(p.brand) : ''
+
+      // Score = length of the matched field (longer = more specific = higher confidence)
+      if (pNameNorm && (pNameNorm.includes(qNorm) || qNorm.includes(pNameNorm))) {
+        candidates.push({ product: p, score: pNameNorm.length })
+      } else if (pBrandNorm && (pBrandNorm.includes(qNorm) || qNorm.includes(pBrandNorm))) {
+        candidates.push({ product: p, score: pBrandNorm.length })
+      } else if (
+        p.aliases?.some((a) => {
+          const aliasNorm = normalizeForMatching(a.alias)
+          return aliasNorm && (aliasNorm.includes(qNorm) || qNorm.includes(aliasNorm))
+        })
+      ) {
+        candidates.push({ product: p, score: 1 })
+      }
+    }
+
+    if (candidates.length === 1) {
+      // Single unambiguous candidate — return it
+      return candidates[0].product
+    }
+
+    if (candidates.length > 1) {
+      // Multiple candidates — pick highest scoring one only if it scores strictly higher
+      // than all others. If there's a tie, treat as ambiguous and return null.
+      candidates.sort((a, b) => b.score - a.score)
+      if (candidates[0].score > candidates[1].score) {
+        return candidates[0].product
+      }
+      // Ambiguous — do not guess
+      return null
     }
 
     return null
   }
+
 
   // ── Phase 10C: Process Spoken Transcript into POS Cart
   const processSpokenTranscript = (transcriptText: string) => {

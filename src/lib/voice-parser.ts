@@ -22,6 +22,122 @@ const DEVANAGARI_DIGITS: Record<string, string> = {
   '९': '9',
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 2. Lightweight deterministic Devanagari → Latin phonetic transliteration map.
+//    Only covers characters commonly appearing in Kirana product names and brands.
+//    Ordered longest-match first within each group for correct multi-char sequences.
+// ─────────────────────────────────────────────────────────────────────────────
+const DEVANAGARI_TO_LATIN: Array<[string, string]> = [
+  // Conjuncts / multi-char sequences first (order matters)
+  ['क्ष', 'ksh'],
+  ['त्र', 'tr'],
+  ['ज्ञ', 'gn'],
+  ['श्र', 'shr'],
+  ['द्ध', 'ddh'],
+  ['न्द', 'nd'],
+  ['ल्क', 'lk'],
+  ['म्ल', 'ml'],
+  // Independent vowels
+  ['अ', 'a'],
+  ['आ', 'aa'],
+  ['इ', 'i'],
+  ['ई', 'ee'],
+  ['उ', 'u'],
+  ['ऊ', 'oo'],
+  ['ए', 'e'],
+  ['ऐ', 'ai'],
+  ['ओ', 'o'],
+  ['औ', 'au'],
+  ['ऋ', 'ri'],
+  // Consonants
+  ['क', 'k'],
+  ['ख', 'kh'],
+  ['ग', 'g'],
+  ['घ', 'gh'],
+  ['च', 'ch'],
+  ['छ', 'chh'],
+  ['ज', 'j'],
+  ['झ', 'jh'],
+  ['ट', 't'],
+  ['ठ', 'th'],
+  ['ड', 'd'],
+  ['ढ', 'dh'],
+  ['ण', 'n'],
+  ['त', 't'],
+  ['थ', 'th'],
+  ['द', 'd'],
+  ['ध', 'dh'],
+  ['न', 'n'],
+  ['प', 'p'],
+  ['फ', 'f'],
+  ['ब', 'b'],
+  ['भ', 'bh'],
+  ['म', 'm'],
+  ['य', 'y'],
+  ['र', 'r'],
+  ['ल', 'l'],
+  ['व', 'v'],
+  ['श', 'sh'],
+  ['ष', 'sh'],
+  ['स', 's'],
+  ['ह', 'h'],
+  // Matras (dependent vowel signs)
+  ['ा', 'a'],
+  ['ि', 'i'],
+  ['ी', 'ee'],
+  ['ु', 'u'],
+  ['ू', 'oo'],
+  ['े', 'e'],
+  ['ै', 'ai'],
+  ['ो', 'o'],
+  ['ौ', 'au'],
+  ['ृ', 'ri'],
+  // Virama (halant) — suppresses inherent vowel; replace with empty
+  ['्', ''],
+  // Anusvara / Chandrabindu — nasal
+  ['ं', 'n'],
+  ['ँ', 'n'],
+  // Visarga
+  ['ः', 'h'],
+  // Nukta (under-dot for loan consonants)
+  ['़', ''],
+  // Avagraha
+  ['ऽ', ''],
+]
+
+/**
+ * Transliterates a Devanagari string to a Latin phonetic approximation.
+ * Pure, deterministic, zero-dependency.
+ */
+function devanagariToLatin(text: string): string {
+  let result = text
+  for (const [devanagari, latin] of DEVANAGARI_TO_LATIN) {
+    result = result.split(devanagari).join(latin)
+  }
+  return result
+}
+
+/**
+ * Normalizes a string for cross-script product matching.
+ * Applies: lowercase → Devanagari digit normalization → Devanagari→Latin
+ * transliteration → whitespace collapse → punctuation strip.
+ *
+ * Both the spoken query AND catalog fields are normalized before comparison,
+ * so "अमूल मिल्क" and "amul milk" resolve to comparable Latin forms.
+ */
+export function normalizeForMatching(text: string): string {
+  if (!text) return ''
+  // Step 1: lowercase
+  let s = text.toLowerCase().trim()
+  // Step 2: Devanagari digit normalization
+  s = s.replace(/[०-९]/g, (digit) => DEVANAGARI_DIGITS[digit] || digit)
+  // Step 3: Transliterate Devanagari characters to Latin phonetics
+  s = devanagariToLatin(s)
+  // Step 4: Collapse whitespace, strip punctuation except spaces
+  s = s.replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim()
+  return s
+}
+
 // 2. Hindi & English spoken number word dictionary
 const NUMBER_WORDS: Record<string, number> = {
   // Hindi words
