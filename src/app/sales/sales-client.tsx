@@ -1,9 +1,10 @@
 'use client'
 
-import React, { useState, useMemo, useRef } from 'react'
+import React, { useState, useMemo, useRef, useEffect } from 'react'
 import Papa from 'papaparse'
 import { Sale, importSales, generateDemoSales, createRetailSale } from './actions'
 import type { Product } from '@/app/inventory/types'
+import { parseSpokenSalesText } from '@/lib/voice-parser'
 
 interface SalesClientProps {
   initialSales: Sale[]
@@ -80,6 +81,14 @@ export default function SalesClient({ initialSales, initialStats, products, fetc
   const [posSearch, setPosSearch] = useState('')
   const [cart, setCart] = useState<CartItem[]>([])
 
+  // ── Phase 10C: Voice Input State
+  const [isListening, setIsListening] = useState(false)
+  const [speechTranscript, setSpeechTranscript] = useState('')
+  const [voiceError, setVoiceError] = useState<string | null>(null)
+  const [voiceUnmatchedItems, setVoiceUnmatchedItems] = useState<string[]>([])
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const recognitionRef = useRef<any>(null)
+
   // CSV states
   const [csvRecords, setCsvRecords] = useState<ValidatedRecord[]>([])
   const [hasParsed, setHasParsed] = useState(false)
@@ -98,6 +107,19 @@ export default function SalesClient({ initialSales, initialStats, products, fetc
       setSuccessMsg(null)
     }, 6000)
   }
+
+  // Clean up Web Speech API recognition on unmount
+  useEffect(() => {
+    return () => {
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.stop()
+        } catch {
+          // Ignore cleanup errors
+        }
+      }
+    }
+  }, [])
 
   // ── Helper map for CSV matching
   const productMap = useMemo(() => {
@@ -121,6 +143,136 @@ export default function SalesClient({ initialSales, initialStats, products, fetc
       return false
     })
   }, [products, posSearch])
+
+  // ── Phase 10C: Product Matcher for Spoken Queries
+  const matchProductFromQuery = (itemQuery: string): Product | null => {
+    const q = itemQuery.toLowerCase().trim()
+    if (!q) return null
+
+    // 1. Exact match on name, barcode, brand, or alias
+    for (const p of products) {
+      if (p.name.toLowerCase() === q) return p
+      if (p.barcode?.toLowerCase() === q) return p
+      if (p.brand?.toLowerCase() === q) return p
+      if (p.aliases?.some((a) => a.alias.toLowerCase() === q)) return p
+    }
+
+    // 2. Substring / partial match
+    for (const p of products) {
+      if (p.name.toLowerCase().includes(q) || q.includes(p.name.toLowerCase())) return p
+      if (p.brand && (p.brand.toLowerCase().includes(q) || q.includes(p.brand.toLowerCase()))) return p
+      if (p.aliases?.some((a) => a.alias.toLowerCase().includes(q) || q.includes(a.alias.toLowerCase()))) return p
+    }
+
+    return null
+  }
+
+  // ── Phase 10C: Process Spoken Transcript into POS Cart
+  const processSpokenTranscript = (transcriptText: string) => {
+    setSpeechTranscript(transcriptText)
+    const parsedItems = parseSpokenSalesText(transcriptText)
+
+    if (parsedItems.length === 0) return
+
+    const unmatched: string[] = []
+
+    parsedItems.forEach(({ quantity, itemQuery }) => {
+      const matched = matchProductFromQuery(itemQuery)
+      if (matched) {
+        if (matched.current_stock <= 0) {
+          showToast(`"${matched.name}" is out of stock.`, true)
+          return
+        }
+
+        setCart((prev) => {
+          const existingIndex = prev.findIndex((c) => c.product.id === matched.id)
+          const targetQty = Math.min(quantity, matched.current_stock)
+
+          if (existingIndex >= 0) {
+            const updated = [...prev]
+            updated[existingIndex] = {
+              ...updated[existingIndex],
+              quantity: targetQty,
+            }
+            return updated
+          }
+
+          return [...prev, { product: matched, quantity: targetQty }]
+        })
+      } else {
+        unmatched.push(itemQuery)
+      }
+    })
+
+    setVoiceUnmatchedItems(unmatched)
+  }
+
+  // ── Phase 10C: Web Speech API Toggle Handler
+  const toggleSpeechRecognition = () => {
+    if (isListening) {
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.stop()
+        } catch {
+          // Ignore
+        }
+      }
+      setIsListening(false)
+      return
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
+
+    if (!SpeechRecognition) {
+      showToast('Speech recognition is not supported in this browser. Please use Chrome or Edge.', true)
+      return
+    }
+
+    try {
+      const recognition = new SpeechRecognition()
+      recognition.lang = 'hi-IN' // Primary: Hindi India
+      recognition.continuous = true
+      recognition.interimResults = true
+
+      recognition.onstart = () => {
+        setIsListening(true)
+        setVoiceError(null)
+        setSpeechTranscript('')
+        setVoiceUnmatchedItems([])
+      }
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      recognition.onresult = (event: any) => {
+        let currentTranscript = ''
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          currentTranscript += event.results[i][0].transcript
+        }
+        if (currentTranscript.trim()) {
+          processSpokenTranscript(currentTranscript)
+        }
+      }
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      recognition.onerror = (event: any) => {
+        if (event.error !== 'no-speech') {
+          console.error('Speech recognition error:', event.error)
+          setVoiceError(`Voice recognition error: ${event.error}`)
+          setIsListening(false)
+        }
+      }
+
+      recognition.onend = () => {
+        setIsListening(false)
+      }
+
+      recognitionRef.current = recognition
+      recognition.start()
+    } catch (err) {
+      console.error('Failed to start speech recognition:', err)
+      showToast('Could not access microphone.', true)
+    }
+  }
 
   // ── Cart Handlers
   const addToCart = (product: Product) => {
@@ -408,7 +560,7 @@ export default function SalesClient({ initialSales, initialStats, products, fetc
         <div>
           <h2 className="text-2xl font-bold text-gray-900">Sales Management</h2>
           <p className="text-gray-500 text-sm mt-1">
-            Fast Kirana POS counter, transactions history, and CSV data imports.
+            Fast Kirana POS counter, Hindi voice sales, transaction history, and CSV data imports.
           </p>
         </div>
 
@@ -465,19 +617,35 @@ export default function SalesClient({ initialSales, initialStats, products, fetc
         </div>
       )}
 
-      {/* ── TAB 1: NEW SALE (POS COUNTER) ────────────────────────────────────── */}
+      {/* ── TAB 1: NEW SALE (POS COUNTER & VOICE) ──────────────────────────── */}
       {activeTab === 'new_sale' && (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-          {/* Left: Product Search & Results (7 cols) */}
+          {/* Left: Product Search, Voice Controls & Results (7 cols) */}
           <div className="lg:col-span-7 space-y-4">
-            <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
-              <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
-                Fast Product Search (Name, Brand, Barcode, Alias)
-              </label>
+            {/* Search + Voice Control Bar */}
+            <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm space-y-3">
+              <div className="flex items-center justify-between">
+                <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                  Fast Search &amp; Hindi Voice Input
+                </label>
+
+                {/* 🎤 Voice Recognition Button */}
+                <button
+                  onClick={toggleSpeechRecognition}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-2 shadow-sm ${
+                    isListening
+                      ? 'bg-red-600 text-white animate-pulse'
+                      : 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white hover:from-blue-700 hover:to-indigo-700'
+                  }`}
+                >
+                  <span>{isListening ? '🛑 Stop Mic' : '🎤 बोलकर बिक्री करें (Voice)'}</span>
+                </button>
+              </div>
+
               <div className="relative">
                 <input
                   type="text"
-                  placeholder="Type product name, brand, barcode, or Hindi alias (e.g. Amul, 890..., दूध)…"
+                  placeholder="Search name, brand, barcode, or Hindi alias (e.g. Amul, 890..., दूध)…"
                   value={posSearch}
                   onChange={(e) => setPosSearch(e.target.value)}
                   className="w-full pl-10 pr-4 py-2.5 border border-gray-300 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
@@ -497,10 +665,52 @@ export default function SalesClient({ initialSales, initialStats, products, fetc
                   </button>
                 )}
               </div>
+
+              {/* 🎤 Live Voice Overlay & Status */}
+              {isListening && (
+                <div className="p-3 bg-red-50 border border-red-200 rounded-lg space-y-1.5">
+                  <div className="flex items-center gap-2 text-xs font-bold text-red-700">
+                    <span className="w-2 h-2 rounded-full bg-red-600 animate-ping"></span>
+                    <span>Listening for Hindi/Hinglish speech (e.g. &quot;दो दूध और तीन कुरकुरे&quot;)…</span>
+                  </div>
+
+                  {speechTranscript ? (
+                    <p className="text-sm font-semibold text-gray-900 bg-white p-2 rounded border border-red-100 italic">
+                      &quot;{speechTranscript}&quot;
+                    </p>
+                  ) : (
+                    <p className="text-xs text-gray-500 italic">Speak item name and quantity into microphone…</p>
+                  )}
+                </div>
+              )}
+
+              {/* Voice Error Notice */}
+              {voiceError && (
+                <div className="p-2.5 bg-amber-50 border border-amber-200 text-amber-800 text-xs rounded-lg flex items-center justify-between">
+                  <span>{voiceError}</span>
+                  <button onClick={() => setVoiceError(null)} className="text-amber-600 hover:text-amber-800 font-bold">
+                    ✕
+                  </button>
+                </div>
+              )}
+
+              {/* Unmatched Voice Items Notice */}
+              {voiceUnmatchedItems.length > 0 && (
+                <div className="p-2.5 bg-amber-50 border border-amber-200 text-amber-900 text-xs rounded-lg space-y-1">
+                  <span className="font-bold">⚠️ Spoken item(s) not matched in catalog:</span>
+                  <div className="flex flex-wrap gap-1">
+                    {voiceUnmatchedItems.map((item, idx) => (
+                      <span key={idx} className="bg-amber-100 text-amber-800 px-2 py-0.5 rounded font-mono">
+                        {item}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Results Grid */}
-            <div className="space-y-2 max-h-[65vh] overflow-y-auto pr-1">
+            <div className="space-y-2 max-h-[60vh] overflow-y-auto pr-1">
               {filteredPosProducts.length === 0 ? (
                 <div className="bg-white border border-gray-200 rounded-xl p-8 text-center shadow-sm">
                   <p className="text-gray-500 text-sm">No products found matching &quot;{posSearch}&quot;</p>
@@ -610,7 +820,7 @@ export default function SalesClient({ initialSales, initialStats, products, fetc
                 {cart.length === 0 ? (
                   <div className="py-10 text-center border-2 border-dashed border-gray-200 rounded-lg">
                     <p className="text-gray-400 text-sm">Cart is empty.</p>
-                    <p className="text-xs text-gray-400 mt-1">Search and click &quot;Add&quot; to build sale.</p>
+                    <p className="text-xs text-gray-400 mt-1">Search or use 🎤 Voice Input to build sale.</p>
                   </div>
                 ) : (
                   cart.map((item) => {
