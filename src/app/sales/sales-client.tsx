@@ -408,6 +408,85 @@ export default function SalesClient({ initialSales, initialStats, products, fetc
     setCart([])
   }
 
+  // ── Phase 10E: Barcode Scanner Handler
+  // Resolves an exact barcode string to a product and adds/increments in cart.
+  // Priority: exact barcode (case-insensitive) before any other matching.
+  const handleBarcodeScanned = (rawBarcode: string) => {
+    const barcode = rawBarcode.trim()
+    if (!barcode) return
+
+    // Tier 0: Exact barcode lookup — highest priority
+    const matched = products.find(
+      (p) => p.barcode && p.barcode.toLowerCase() === barcode.toLowerCase()
+    )
+
+    if (!matched) {
+      showToast(`Barcode not found: "${barcode}". Check product catalog.`, true)
+      return
+    }
+
+    if (matched.current_stock <= 0) {
+      showToast(`"${matched.name}" is out of stock.`, true)
+      return
+    }
+
+    // Increment by 1, capped at available stock (same logic as addToCart)
+    setCart((prev) => {
+      const existingIndex = prev.findIndex((c) => c.product.id === matched.id)
+
+      if (existingIndex >= 0) {
+        const currentQty = prev[existingIndex].quantity
+
+        if (currentQty >= matched.current_stock) {
+          setTimeout(() => {
+            showToast(
+              `Stock limit reached for "${matched.name}" (${matched.current_stock} available).`,
+              true
+            )
+          }, 0)
+          return prev
+        }
+
+        const updated = [...prev]
+        updated[existingIndex] = {
+          ...updated[existingIndex],
+          quantity: currentQty + 1,
+        }
+        return updated
+      }
+
+      return [...prev, { product: matched, quantity: 1 }]
+    })
+
+    showToast(`Added "${matched.name}" to cart.`)
+  }
+
+  // ── Phase 10E: Search field keydown — intercept Enter for barcode scanner
+  // USB/Bluetooth barcode scanners type the barcode rapidly and send Enter.
+  // When Enter is pressed on the search field:
+  //   1. Attempt exact barcode lookup first.
+  //   2. If matched → add to cart and clear the search field.
+  //   3. If no barcode match → leave field value so normal text search results
+  //      remain visible (does not disrupt manual typing workflow).
+  const handleSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key !== 'Enter') return
+    const query = posSearch.trim()
+    if (!query) return
+
+    // Check for exact barcode match
+    const barcodeMatch = products.find(
+      (p) => p.barcode && p.barcode.toLowerCase() === query.toLowerCase()
+    )
+
+    if (barcodeMatch) {
+      e.preventDefault()
+      handleBarcodeScanned(query)
+      setPosSearch('')
+    }
+    // No barcode match — let Enter do nothing; keep text in field so the
+    // filtered product list remains visible for manual selection.
+  }
+
   // Grand totals for cart
   const cartTotals = useMemo(() => {
     const totalItems = cart.length
@@ -714,17 +793,27 @@ export default function SalesClient({ initialSales, initialStats, products, fetc
                   Fast Search &amp; Hindi Voice Input
                 </label>
 
-                {/* 🎤 Voice Recognition Button */}
-                <button
-                  onClick={toggleSpeechRecognition}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-2 shadow-sm ${
-                    isListening
-                      ? 'bg-red-600 text-white animate-pulse'
-                      : 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white hover:from-blue-700 hover:to-indigo-700'
-                  }`}
-                >
-                  <span>{isListening ? '🛑 Stop Mic' : '🎤 बोलकर बिक्री करें (Voice)'}</span>
-                </button>
+                <div className="flex items-center gap-2">
+                  {/* 📷 Barcode scanner hint badge */}
+                  <span className="px-2 py-1 rounded-md bg-gray-100 border border-gray-200 text-gray-500 text-xs font-medium flex items-center gap-1">
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h1M4 10h1M4 14h1M4 18h1M8 6h1M8 18h1M12 6v12M16 6h1M16 18h1M20 6h1M20 10h1M20 14h1M20 18h1" />
+                    </svg>
+                    Scan barcode
+                  </span>
+
+                  {/* 🎤 Voice Recognition Button */}
+                  <button
+                    onClick={toggleSpeechRecognition}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-2 shadow-sm ${
+                      isListening
+                        ? 'bg-red-600 text-white animate-pulse'
+                        : 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white hover:from-blue-700 hover:to-indigo-700'
+                    }`}
+                  >
+                    <span>{isListening ? '🛑 Stop Mic' : '🎤 बोलकर बिक्री करें (Voice)'}</span>
+                  </button>
+                </div>
               </div>
 
               <div className="relative">
@@ -733,6 +822,7 @@ export default function SalesClient({ initialSales, initialStats, products, fetc
                   placeholder="Search name, brand, barcode, or Hindi alias (e.g. Amul, 890..., दूध)…"
                   value={posSearch}
                   onChange={(e) => setPosSearch(e.target.value)}
+                  onKeyDown={handleSearchKeyDown}
                   className="w-full pl-10 pr-4 py-2.5 border border-gray-300 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                   autoFocus
                 />
