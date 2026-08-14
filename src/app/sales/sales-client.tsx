@@ -1,4 +1,4 @@
-'use client'
+﻿'use client'
 
 import React, { useState, useMemo, useRef, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
@@ -82,6 +82,25 @@ export default function SalesClient({ initialSales, initialStats, products, fetc
   // ── New Sale / POS State
   const [posSearch, setPosSearch] = useState('')
   const [cart, setCart] = useState<CartItem[]>([])
+
+  // ── Phase 10F: Customer & Billing State
+  const [customerName, setCustomerName] = useState('')
+  const [customerPhone, setCustomerPhone] = useState('')
+  const [discountInput, setDiscountInput] = useState('0')
+
+  // Receipt state — populated after a successful sale, null when no active receipt
+  interface ReceiptLine { name: string; quantity: number; unitPrice: number; lineTotal: number }
+  interface CompletedBill {
+    receiptAt: string          // ISO timestamp string
+    customerName: string
+    customerPhone: string
+    lines: ReceiptLine[]
+    subtotal: number
+    discount: number
+    grandTotal: number
+    totalUnits: number
+  }
+  const [completedBill, setCompletedBill] = useState<CompletedBill | null>(null)
 
   // ── Phase 10C: Voice Input State
   const [isListening, setIsListening] = useState(false)
@@ -487,17 +506,30 @@ export default function SalesClient({ initialSales, initialStats, products, fetc
     // filtered product list remains visible for manual selection.
   }
 
-  // Grand totals for cart
+  // Grand totals for cart (Phase 10F: subtotal + discount-aware grandTotal)
   const cartTotals = useMemo(() => {
     const totalItems = cart.length
     const totalUnits = cart.reduce((sum, c) => sum + c.quantity, 0)
-    const grandTotal = cart.reduce((sum, c) => sum + c.quantity * c.product.price, 0)
-    return { totalItems, totalUnits, grandTotal }
-  }, [cart])
+    const subtotal = cart.reduce((sum, c) => sum + c.quantity * c.product.price, 0)
+    const discountAmt = Math.min(Math.max(parseFloat(discountInput) || 0, 0), subtotal)
+    const grandTotal = subtotal - discountAmt
+    return { totalItems, totalUnits, subtotal, discountAmt, grandTotal }
+  }, [cart, discountInput])
 
   // Complete Retail Sale trigger (Atomic PL/pgSQL RPC execution)
   const handleCompleteSale = async () => {
     if (cart.length === 0) return
+
+    // ── Phase 10F: Validate discount before submitting
+    const discountVal = parseFloat(discountInput) || 0
+    if (discountVal < 0) {
+      showToast('Discount cannot be negative.', true)
+      return
+    }
+    if (discountVal > cartTotals.subtotal) {
+      showToast('Discount cannot exceed the subtotal.', true)
+      return
+    }
 
     setPending(true)
     setErrorMsg(null)
@@ -507,21 +539,56 @@ export default function SalesClient({ initialSales, initialStats, products, fetc
       quantity: item.quantity,
     }))
 
+    // Snapshot the bill before the cart is cleared — the RPC uses authoritative
+    // DB prices, so totalRevenue from the RPC is the financial source of truth.
+    // We display the client-side prices for the receipt (identical since price
+    // is read-only from the product catalog and cannot change mid-transaction).
+    const billSnapshot = {
+      customerName: customerName.trim(),
+      customerPhone: customerPhone.trim(),
+      lines: cart.map((item) => ({
+        name: item.product.name,
+        quantity: item.quantity,
+        unitPrice: item.product.price,
+        lineTotal: item.quantity * item.product.price,
+      })),
+      subtotal: cartTotals.subtotal,
+      discount: cartTotals.discountAmt,
+      grandTotal: cartTotals.grandTotal,
+      totalUnits: cartTotals.totalUnits,
+    }
+
     const result = await createRetailSale(cartPayload)
 
     if (result.error) {
       showToast(result.error, true)
       setPending(false)
     } else {
-      showToast(
-        `Sale completed! Deducted stock and recorded ₹${(result.totalRevenue ?? 0).toFixed(
-          2
-        )} (${result.totalUnits ?? 0} units).`
-      )
+      // Populate receipt with RPC-authoritative revenue for accuracy
+      setCompletedBill({
+        receiptAt: new Date().toISOString(),
+        ...billSnapshot,
+        // Override grandTotal with RPC total_revenue (authoritative DB price)
+        grandTotal: Number(result.totalRevenue ?? billSnapshot.grandTotal),
+      })
       setCart([])
+      setCustomerName('')
+      setCustomerPhone('')
+      setDiscountInput('0')
       setPending(false)
       router.refresh()
     }
+  }
+
+  // ── Phase 10F: Start a new sale from the receipt screen
+  const handleNewSale = () => {
+    setCompletedBill(null)
+    setCart([])
+    setCustomerName('')
+    setCustomerPhone('')
+    setDiscountInput('0')
+    setErrorMsg(null)
+    setSuccessMsg(null)
   }
 
   // ── Filtered Sales History List
@@ -719,6 +786,24 @@ export default function SalesClient({ initialSales, initialStats, products, fetc
 
   return (
     <div className="space-y-6">
+      {/* ── Phase 10F: Print styles — hides all POS UI except the receipt */}
+      <style>{`
+        @media print {
+          body * { visibility: hidden !important; }
+          #pos-receipt, #pos-receipt * { visibility: visible !important; }
+          #pos-receipt {
+            position: fixed !important;
+            top: 0 !important; left: 0 !important;
+            width: 80mm !important;
+            padding: 8mm !important;
+            font-size: 11px !important;
+            background: white !important;
+            box-shadow: none !important;
+            border: none !important;
+          }
+          .print-hide { display: none !important; }
+        }
+      `}</style>
       {/* Header & Modes/Tabs */}
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-gray-200 pb-4">
         <div>
@@ -970,7 +1055,87 @@ export default function SalesClient({ initialSales, initialStats, products, fetc
 
           {/* Right: Cart & Checkout Counter (5 cols) */}
           <div className="lg:col-span-5">
-            <div className="bg-white border border-gray-200 rounded-xl shadow-md p-5 sticky top-4 space-y-4">
+            {/* ── Phase 10F: Receipt View — shown after successful sale */}
+            {completedBill ? (
+              <div id="pos-receipt" className="bg-white border border-gray-200 rounded-xl shadow-md p-5 space-y-4">
+                {/* Receipt Header */}
+                <div className="text-center border-b border-gray-200 pb-3">
+                  <h3 className="text-lg font-bold text-gray-900">StockMind AI</h3>
+                  <p className="text-xs text-gray-500 mt-0.5">Kirana POS Receipt</p>
+                  <p className="text-xs text-gray-400 mt-1">
+                    {new Date(completedBill.receiptAt).toLocaleString('en-IN', {
+                      day: '2-digit', month: 'short', year: 'numeric',
+                      hour: '2-digit', minute: '2-digit', hour12: true,
+                    })}
+                  </p>
+                </div>
+
+                {/* Customer Info */}
+                {(completedBill.customerName || completedBill.customerPhone) && (
+                  <div className="text-xs text-gray-600 space-y-0.5 border-b border-gray-100 pb-2">
+                    {completedBill.customerName && (
+                      <p><span className="font-semibold">Customer:</span> {completedBill.customerName}</p>
+                    )}
+                    {completedBill.customerPhone && (
+                      <p><span className="font-semibold">Phone:</span> {completedBill.customerPhone}</p>
+                    )}
+                  </div>
+                )}
+
+                {/* Line Items */}
+                <div className="space-y-1.5">
+                  <div className="grid grid-cols-12 text-xs font-semibold text-gray-400 uppercase tracking-wider pb-1 border-b border-gray-100">
+                    <span className="col-span-5">Item</span>
+                    <span className="col-span-2 text-right">Qty</span>
+                    <span className="col-span-2 text-right">Price</span>
+                    <span className="col-span-3 text-right">Total</span>
+                  </div>
+                  {completedBill.lines.map((line, idx) => (
+                    <div key={idx} className="grid grid-cols-12 text-xs text-gray-800">
+                      <span className="col-span-5 font-medium truncate">{line.name}</span>
+                      <span className="col-span-2 text-right">{line.quantity}</span>
+                      <span className="col-span-2 text-right">₹{line.unitPrice.toFixed(2)}</span>
+                      <span className="col-span-3 text-right font-semibold">₹{line.lineTotal.toFixed(2)}</span>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Bill Summary */}
+                <div className="border-t border-gray-200 pt-3 space-y-1.5 text-sm">
+                  <div className="flex justify-between text-gray-600">
+                    <span>Subtotal</span>
+                    <span>₹{completedBill.subtotal.toFixed(2)}</span>
+                  </div>
+                  {completedBill.discount > 0 && (
+                    <div className="flex justify-between text-emerald-700">
+                      <span>Discount</span>
+                      <span>− ₹{completedBill.discount.toFixed(2)}</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between font-bold text-base text-gray-900 pt-1 border-t border-gray-200">
+                    <span>Grand Total</span>
+                    <span className="text-emerald-700">₹{completedBill.grandTotal.toFixed(2)}</span>
+                  </div>
+                </div>
+
+                {/* Action Buttons — hidden when printing */}
+                <div className="print-hide flex gap-3 pt-2">
+                  <button
+                    onClick={() => window.print()}
+                    className="flex-1 py-2 border border-gray-300 text-gray-700 text-sm font-semibold rounded-lg hover:bg-gray-50 transition-colors flex items-center justify-center gap-2"
+                  >
+                    🖨️ Print Bill
+                  </button>
+                  <button
+                    onClick={handleNewSale}
+                    className="flex-1 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-bold rounded-lg transition-colors flex items-center justify-center gap-2"
+                  >
+                    🧾 New Sale
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="bg-white border border-gray-200 rounded-xl shadow-md p-5 sticky top-4 space-y-4">
               <div className="flex items-center justify-between border-b border-gray-100 pb-3">
                 <div>
                   <h3 className="font-bold text-gray-900 text-lg flex items-center gap-2">
@@ -1058,10 +1223,58 @@ export default function SalesClient({ initialSales, initialStats, products, fetc
                 )}
               </div>
 
-              {/* Cart Summary & Complete Sale */}
+              {/* ── Phase 10F: Customer Information (Optional) */}
+              {cart.length > 0 && (
+                <div className="border-t border-gray-100 pt-3 space-y-2">
+                  <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Customer (Optional)</p>
+                  <input
+                    type="text"
+                    placeholder="Customer name"
+                    value={customerName}
+                    onChange={(e) => setCustomerName(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-blue-400"
+                  />
+                  <input
+                    type="tel"
+                    placeholder="Phone number"
+                    value={customerPhone}
+                    onChange={(e) => setCustomerPhone(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-blue-400"
+                  />
+                </div>
+              )}
+
+              {/* ── Phase 10F: Bill Summary, Discount & Complete Sale */}
               {cart.length > 0 && (
                 <div className="border-t border-gray-200 pt-3 space-y-3">
-                  <div className="flex items-center justify-between text-base font-bold text-gray-900">
+                  {/* Subtotal */}
+                  <div className="flex items-center justify-between text-sm text-gray-600">
+                    <span>Subtotal</span>
+                    <span className="font-semibold">₹{cartTotals.subtotal.toFixed(2)}</span>
+                  </div>
+
+                  {/* Discount */}
+                  <div className="flex items-center justify-between gap-3">
+                    <label className="text-sm text-gray-600 shrink-0">Discount (₹)</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={discountInput}
+                      onChange={(e) => setDiscountInput(e.target.value)}
+                      onBlur={() => {
+                        // Clamp on blur: negative → 0, exceeds subtotal → subtotal
+                        const val = parseFloat(discountInput) || 0
+                        if (val < 0) setDiscountInput('0')
+                        else if (val > cartTotals.subtotal)
+                          setDiscountInput(cartTotals.subtotal.toFixed(2))
+                      }}
+                      className="w-28 px-3 py-1.5 border border-gray-300 rounded-lg text-sm text-gray-900 text-right focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-blue-400"
+                    />
+                  </div>
+
+                  {/* Grand Total */}
+                  <div className="flex items-center justify-between font-bold text-base text-gray-900 border-t border-gray-100 pt-2">
                     <span>Grand Total</span>
                     <span className="text-xl text-emerald-700">₹{cartTotals.grandTotal.toFixed(2)}</span>
                   </div>
@@ -1083,6 +1296,7 @@ export default function SalesClient({ initialSales, initialStats, products, fetc
                 </div>
               )}
             </div>
+            )}
           </div>
         </div>
       )}
