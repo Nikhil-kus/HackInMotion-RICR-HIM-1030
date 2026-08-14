@@ -4,6 +4,12 @@ import { createClient } from '@/utils/supabase/server'
 import { generateProductForecast } from '@/lib/forecasting/engine'
 import { calculateAndStoreAlerts } from '@/app/alerts/actions'
 import { fetchPurchaseMetrics } from '@/app/purchases/actions'
+import {
+  getNextFestival,
+  getFestivalsInRange,
+  daysBetween,
+  type FestivalConfig,
+} from '@/lib/festivals/calendar'
 
 export interface DailySalesTrend {
   date: string      // YYYY-MM-DD
@@ -49,6 +55,47 @@ export interface ExpiryRiskProduct {
   daysOfStock: number
   price: number
   capitalAtRisk: number
+}
+
+// ── Phase 10I: Festival Intelligence types ────────────────────────────────────
+
+export interface FestivalProductInsight {
+  productId: string
+  productName: string
+  currentStock: number
+  price: number
+  // Baseline mean daily demand over the full available history window
+  baselineDailyDemand: number
+  // Mean daily demand during the festival period (null = insufficient data)
+  festivalDailyDemand: number | null
+  // Percentage uplift vs baseline (null = insufficient data)
+  historicalUpliftPct: number | null
+  // Festival-period demand estimate for the prep window
+  expectedFestivalNeed: number | null
+  // How many sale days existed in the festival comparison window (for transparency)
+  festivalSaleDays: number
+  // Minimum required sale days to compute a valid uplift
+  minSaleDaysRequired: number
+  // Preparation status derived from current stock vs expected need
+  prepStatus: 'ok' | 'low' | 'risk' | 'unknown'
+  // Human-readable deterministic insight string
+  insight: string
+}
+
+export interface FestivalInsightsData {
+  // The next upcoming festival from the configured calendar
+  nextFestival: FestivalConfig | null
+  // Days until the next festival (negative = in the past, null = no upcoming festival)
+  daysUntilNextFestival: number | null
+  // Any festivals that fell within the last 90-day sales history window
+  // — used for historical uplift calculation
+  historicalFestivals: FestivalConfig[]
+  // Per-product analysis for the next upcoming festival (or the most recent past one)
+  productInsights: FestivalProductInsight[]
+  // Count of products with sufficient evidence
+  productsWithEvidence: number
+  // Count of products needing attention (low or risk status)
+  productsNeedingAttention: number
 }
 
 export interface DashboardAnalyticsData {
@@ -98,6 +145,8 @@ export interface DashboardAnalyticsData {
   // Section I: All products — full dataset for What-If Simulation (Phase 10H)
   // biProducts is already computed internally; this exposes it without new queries.
   allProducts: BIProductSummary[]
+  // Section J: Festival & Seasonal Intelligence (Phase 10I)
+  festivalInsights: FestivalInsightsData
 }
 
 export async function fetchDashboardAnalytics(dateRangeDays: number): Promise<{ data?: DashboardAnalyticsData; error?: string }> {
@@ -463,6 +512,163 @@ export async function fetchDashboardAnalytics(dateRangeDays: number): Promise<{ 
       aiInsights.push('Verify regular sales data updates to ensure real-time analytics accuracy.')
     }
 
+    // ── Phase 10I: Festival Intelligence computation ─────────────────────────
+    // Uses the existing forecastSales / salesMap data — NO new database queries.
+    // Minimum 5 distinct sale days required in each comparison window for validity.
+    const MIN_FESTIVAL_SALE_DAYS = 5
+    const todayUtc = new Date().toISOString().split('T')[0]
+    const ninetyDaysAgoUtc = new Date()
+    ninetyDaysAgoUtc.setDate(ninetyDaysAgoUtc.getDate() - 90)
+    const windowStart = ninetyDaysAgoUtc.toISOString().split('T')[0]
+
+    const nextFestival = getNextFestival(todayUtc)
+    const daysUntilNextFestival = nextFestival
+      ? daysBetween(todayUtc, nextFestival.date)
+      : null
+
+    // Find festivals within the last 90 days — these have historical data available
+    const historicalFestivals = getFestivalsInRange(windowStart, todayUtc)
+
+    // Determine which festival to analyze:
+    // Priority 1: A festival within the last 30 days (most recent historical evidence)
+    // Priority 2: The next upcoming festival (forward-looking, if its date is ≤ 90 days away)
+    // Priority 3: null — no suitable festival for analysis
+    const recentFestivals = historicalFestivals
+      .filter((f) => daysBetween(f.date, todayUtc) <= 30)
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+
+    const targetFestival: FestivalConfig | null =
+      recentFestivals[0] ??
+      (nextFestival && daysUntilNextFestival !== null && daysUntilNextFestival <= 90
+        ? nextFestival
+        : null)
+
+    const productInsights: FestivalProductInsight[] = []
+
+    if (targetFestival) {
+      const festivalDateMs = new Date(targetFestival.date).getTime()
+      // Festival comparison window: [festivalDate - 14 days, festivalDate + 7 days]
+      const festWindowStart = new Date(festivalDateMs - 14 * 86400000).toISOString().split('T')[0]
+      const festWindowEnd = new Date(festivalDateMs + 7 * 86400000).toISOString().split('T')[0]
+
+      products.forEach((p) => {
+        const productSales = salesMap.get(p.id) || []
+        const biEntry = biProducts.find((b) => b.id === p.id)
+        // Use the same 90-day window baseline as the forecasting engine
+        const baselineDailyDemand90 = biEntry ? biEntry.salesVolume / 90 : 0
+
+        // Split sales into festival-period and non-festival baseline
+        const festivalSales = productSales.filter((s) => {
+          const d = s.sale_date.split('T')[0]
+          return d >= festWindowStart && d <= festWindowEnd
+        })
+        const baselineSales = productSales.filter((s) => {
+          const d = s.sale_date.split('T')[0]
+          return d < festWindowStart || d > festWindowEnd
+        })
+
+        // Count distinct sale days in each window
+        const festSaleDays = new Set(festivalSales.map((s) => s.sale_date.split('T')[0])).size
+        const baseSaleDays = new Set(baselineSales.map((s) => s.sale_date.split('T')[0])).size
+
+        const hasSufficientHistory =
+          festSaleDays >= MIN_FESTIVAL_SALE_DAYS &&
+          baseSaleDays >= MIN_FESTIVAL_SALE_DAYS
+
+        let festivalDailyDemand: number | null = null
+        let historicalUpliftPct: number | null = null
+        let expectedFestivalNeed: number | null = null
+        let prepStatus: FestivalProductInsight['prepStatus'] = 'unknown'
+        let insight = ''
+
+        const baselineMean =
+          baseSaleDays > 0
+            ? baselineSales.reduce((s, r) => s + r.quantity, 0) / baseSaleDays
+            : 0
+
+        if (!hasSufficientHistory) {
+          insight = `Festival demand ke liye abhi enough history nahi hai (${festSaleDays} festival sale days, minimum ${MIN_FESTIVAL_SALE_DAYS} required).`
+        } else {
+          const festMean = festivalSales.reduce((s, r) => s + r.quantity, 0) / festSaleDays
+          festivalDailyDemand = Math.round(festMean * 10) / 10
+          historicalUpliftPct =
+            baselineMean > 0
+              ? Math.round(((festMean - baselineMean) / baselineMean) * 100)
+              : null
+
+          // Use the 90-day baseline as the forward-looking rate, scaled by uplift
+          const effectiveDailyDemand =
+            historicalUpliftPct !== null
+              ? baselineDailyDemand90 * (1 + historicalUpliftPct / 100)
+              : baselineDailyDemand90
+          expectedFestivalNeed = Math.ceil(
+            effectiveDailyDemand * targetFestival.festivalWindowDays
+          )
+
+          const stock = p.current_stock
+          if (expectedFestivalNeed <= 0) {
+            prepStatus = 'ok'
+          } else if (stock >= expectedFestivalNeed) {
+            prepStatus = 'ok'
+          } else if (stock >= expectedFestivalNeed * 0.6) {
+            prepStatus = 'low'
+          } else {
+            prepStatus = 'risk'
+          }
+
+          const upliftStr =
+            historicalUpliftPct !== null
+              ? historicalUpliftPct >= 0
+                ? `+${historicalUpliftPct}%`
+                : `${historicalUpliftPct}%`
+              : 'stable'
+          const statusStr =
+            prepStatus === 'ok'
+              ? 'Stock ठीक है।'
+              : prepStatus === 'low'
+              ? `Stock बढ़ाना चाहिए — expected need: ${expectedFestivalNeed} units।`
+              : `Stock-out Risk — expected need: ${expectedFestivalNeed} units, current: ${stock}।`
+
+          insight = `${targetFestival.name} period mein historical demand ${upliftStr} thi (${festSaleDays} sale days analyzed). ${statusStr}`
+        }
+
+        productInsights.push({
+          productId: p.id,
+          productName: p.name,
+          currentStock: p.current_stock,
+          price: Number(p.price),
+          baselineDailyDemand: Math.round(baselineMean * 10) / 10,
+          festivalDailyDemand,
+          historicalUpliftPct,
+          expectedFestivalNeed,
+          festivalSaleDays: festSaleDays,
+          minSaleDaysRequired: MIN_FESTIVAL_SALE_DAYS,
+          prepStatus,
+          insight,
+        })
+      })
+
+      // Sort: risk first, then low, then ok, then unknown.
+      // Within each group, sort by expected festival need descending.
+      productInsights.sort((a, b) => {
+        const order: Record<string, number> = { risk: 0, low: 1, ok: 2, unknown: 3 }
+        const diff = order[a.prepStatus] - order[b.prepStatus]
+        if (diff !== 0) return diff
+        return (b.expectedFestivalNeed ?? 0) - (a.expectedFestivalNeed ?? 0)
+      })
+    }
+
+    const festivalInsights: FestivalInsightsData = {
+      nextFestival,
+      daysUntilNextFestival,
+      historicalFestivals,
+      productInsights: productInsights.slice(0, 8),
+      productsWithEvidence: productInsights.filter((p) => p.historicalUpliftPct !== null).length,
+      productsNeedingAttention: productInsights.filter(
+        (p) => p.prepStatus === 'low' || p.prepStatus === 'risk'
+      ).length,
+    }
+
     return {
       data: {
         kpis: {
@@ -490,7 +696,8 @@ export async function fetchDashboardAnalytics(dateRangeDays: number): Promise<{ 
         purchasing,
         expiryRisks,
         aiInsights,
-        allProducts: biProducts
+        allProducts: biProducts,
+        festivalInsights
       }
     }
   } catch (err) {

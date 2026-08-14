@@ -55,6 +55,7 @@ export default function DashboardClient({ initialData, initialDays }: DashboardC
     expiryRisks,
     aiInsights,
     allProducts,
+    festivalInsights,
   } = data
 
   // ── Today's stats: use the last date key in the trend array — this is the
@@ -655,8 +656,217 @@ export default function DashboardClient({ initialData, initialDays }: DashboardC
           </div>
         </div>
 
-        {/* ── SECTION: 🧠 What-If Simulation ─────────────────────────── */}
+        {/* ── SECTION: � Festival & Seasonal Intelligence ────────────── */}
         <div className="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
+
+          {/* Header */}
+          <div className="bg-gradient-to-r from-orange-50 to-amber-50 px-6 py-4 border-b border-amber-100">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+              <div>
+                <h3 className="text-md font-bold text-amber-900">🪔 Aane Wale Festivals</h3>
+                <p className="text-xs text-amber-700 mt-0.5">
+                  Festival ke liye Stock pehle se ready rakhein — historical sales analysis
+                </p>
+              </div>
+              {/* Upcoming festival countdown */}
+              {festivalInsights.nextFestival && festivalInsights.daysUntilNextFestival !== null && (
+                <div className="flex items-center gap-2 bg-white border border-amber-200 px-4 py-2 rounded-xl self-start sm:self-auto shrink-0">
+                  <span className="text-xl">{festivalInsights.nextFestival.emoji}</span>
+                  <div>
+                    <p className="text-xs font-bold text-amber-900">{festivalInsights.nextFestival.name}</p>
+                    <p className="text-[10px] text-amber-600 font-semibold">
+                      {festivalInsights.daysUntilNextFestival <= 0
+                        ? 'आज / अभी'
+                        : `${festivalInsights.daysUntilNextFestival} दिन बाकी`}
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="p-6 space-y-5">
+
+            {/* Summary row */}
+            {festivalInsights.nextFestival === null ? (
+              <div className="py-6 text-center text-gray-400 text-sm bg-gray-50 rounded-lg border border-gray-100">
+                Abhi koi upcoming festival configured नहीं है।
+              </div>
+            ) : (
+              <>
+                {/* Festival analysis context */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  <div className="bg-amber-50 border border-amber-100 rounded-xl p-4">
+                    <span className="block text-xs font-semibold text-amber-700 uppercase tracking-wider">Next Festival</span>
+                    <span className="text-lg font-bold text-amber-900 mt-1 block">
+                      {festivalInsights.nextFestival.emoji} {festivalInsights.nextFestival.name}
+                    </span>
+                    <span className="text-[10px] text-amber-500">
+                      {festivalInsights.daysUntilNextFestival !== null && festivalInsights.daysUntilNextFestival > 0
+                        ? `${festivalInsights.daysUntilNextFestival} दिन बाकी`
+                        : festivalInsights.daysUntilNextFestival === 0 ? 'आज!' : 'Recently passed'}
+                    </span>
+                  </div>
+                  <div className="bg-white border border-gray-200 rounded-xl p-4">
+                    <span className="block text-xs font-semibold text-gray-500 uppercase tracking-wider">Historical Evidence</span>
+                    <span className="text-2xl font-bold text-gray-900 mt-1 block">{festivalInsights.productsWithEvidence}</span>
+                    <span className="text-[10px] text-gray-400">products analyzed</span>
+                  </div>
+                  <div className="bg-red-50 border border-red-100 rounded-xl p-4">
+                    <span className="block text-xs font-semibold text-red-600 uppercase tracking-wider">Attention Needed</span>
+                    <span className="text-2xl font-bold text-red-800 mt-1 block">{festivalInsights.productsNeedingAttention}</span>
+                    <span className="text-[10px] text-red-400">low or at-risk products</span>
+                  </div>
+                  <div className="bg-gray-50 border border-gray-200 rounded-xl p-4">
+                    <span className="block text-xs font-semibold text-gray-500 uppercase tracking-wider">Data Window</span>
+                    <span className="text-sm font-bold text-gray-700 mt-1 block">Last 90 दिन</span>
+                    <span className="text-[10px] text-gray-400">
+                      {festivalInsights.historicalFestivals.length > 0
+                        ? `${festivalInsights.historicalFestivals.length} festival(s) in window`
+                        : 'No past festivals in window'}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Historical festivals in window note */}
+                {festivalInsights.historicalFestivals.length === 0 && (
+                  <div className="p-3 bg-amber-50 border border-amber-100 rounded-lg text-xs text-amber-800">
+                    <span className="font-bold">📊 Note:</span> Last 90 दिनों में कोई festival नहीं था।
+                    Analysis next festival ({festivalInsights.nextFestival.name}) के लिए forward-looking estimate है,
+                    इसलिए historical uplift available नहीं है। Products की current sales velocity use होगी।
+                  </div>
+                )}
+
+                {/* Product Table */}
+                <div>
+                  <h4 className="text-sm font-bold text-gray-900 mb-3">
+                    🛍️ Festival ke liye Stock — {festivalInsights.nextFestival.emoji} {festivalInsights.nextFestival.name}
+                  </h4>
+
+                  {festivalInsights.productInsights.length === 0 ? (
+                    <div className="py-8 text-center text-gray-400 text-sm bg-gray-50 border border-gray-100 rounded-lg">
+                      Festival demand ke liye abhi enough sales history नहीं है।
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto border border-gray-200 rounded-lg">
+                      <table className="min-w-full text-xs text-gray-700">
+                        <thead className="bg-gray-50 text-gray-500 font-semibold uppercase">
+                          <tr>
+                            <th className="px-4 py-2.5 text-left">Product</th>
+                            <th className="px-4 py-2.5 text-center">Normal Demand</th>
+                            <th className="px-4 py-2.5 text-center">Festival Demand</th>
+                            <th className="px-4 py-2.5 text-center">Historical Increase</th>
+                            <th className="px-4 py-2.5 text-center">Current Stock</th>
+                            <th className="px-4 py-2.5 text-center">Expected Need</th>
+                            <th className="px-4 py-2.5 text-center">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-100 font-medium bg-white">
+                          {festivalInsights.productInsights.map((p) => (
+                            <tr
+                              key={p.productId}
+                              className={
+                                p.prepStatus === 'risk' ? 'bg-red-50/40' :
+                                p.prepStatus === 'low' ? 'bg-amber-50/30' : ''
+                              }
+                            >
+                              <td className="px-4 py-3 font-bold text-gray-900">{p.productName}</td>
+                              <td className="px-4 py-3 text-center text-gray-600">
+                                {p.baselineDailyDemand > 0 ? `${p.baselineDailyDemand}/दिन` : '—'}
+                              </td>
+                              <td className="px-4 py-3 text-center font-semibold text-amber-700">
+                                {p.festivalDailyDemand !== null ? `${p.festivalDailyDemand}/दिन` : (
+                                  <span className="text-gray-400 font-normal">History कम है</span>
+                                )}
+                              </td>
+                              <td className="px-4 py-3 text-center">
+                                {p.historicalUpliftPct !== null ? (
+                                  <span className={`font-bold ${p.historicalUpliftPct > 0 ? 'text-emerald-700' : p.historicalUpliftPct < 0 ? 'text-red-600' : 'text-gray-500'}`}>
+                                    {p.historicalUpliftPct > 0 ? `+${p.historicalUpliftPct}%` : `${p.historicalUpliftPct}%`}
+                                  </span>
+                                ) : (
+                                  <span className="text-gray-400 text-[10px]">अपर्याप्त data</span>
+                                )}
+                              </td>
+                              <td className="px-4 py-3 text-center font-semibold">{p.currentStock}</td>
+                              <td className="px-4 py-3 text-center font-bold text-indigo-700">
+                                {p.expectedFestivalNeed !== null ? `${p.expectedFestivalNeed} units` : '—'}
+                              </td>
+                              <td className="px-4 py-3 text-center">
+                                {p.prepStatus === 'ok' && (
+                                  <span className="inline-flex px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                                    🟢 Stock ठीक है
+                                  </span>
+                                )}
+                                {p.prepStatus === 'low' && (
+                                  <span className="inline-flex px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200">
+                                    🟡 Stock बढ़ाना चाहिए
+                                  </span>
+                                )}
+                                {p.prepStatus === 'risk' && (
+                                  <span className="inline-flex px-2 py-0.5 rounded text-[10px] font-bold bg-red-100 text-red-800 border border-red-200">
+                                    🔴 Stock-out Risk
+                                  </span>
+                                )}
+                                {p.prepStatus === 'unknown' && (
+                                  <span className="inline-flex px-2 py-0.5 rounded text-[10px] font-normal bg-gray-100 text-gray-500 border border-gray-200">
+                                    History कम है
+                                  </span>
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+
+                {/* Insights */}
+                {festivalInsights.productInsights.filter((p) => p.historicalUpliftPct !== null || p.prepStatus !== 'unknown').length > 0 && (
+                  <div className="bg-amber-50/60 border border-amber-100 rounded-xl p-4 space-y-2">
+                    <h4 className="text-xs font-bold text-amber-900 uppercase tracking-wider">�🧠 StockMind की सलाह — {festivalInsights.nextFestival.name}</h4>
+                    <ul className="space-y-1.5">
+                      {festivalInsights.productInsights
+                        .filter((p) => p.prepStatus !== 'unknown')
+                        .slice(0, 5)
+                        .map((p) => (
+                          <li key={p.productId} className="text-xs text-amber-800 flex items-start gap-2">
+                            <span className="shrink-0 mt-0.5">
+                              {p.prepStatus === 'ok' ? '🟢' : p.prepStatus === 'low' ? '🟡' : '🔴'}
+                            </span>
+                            <span>{p.insight}</span>
+                          </li>
+                        ))}
+                    </ul>
+                    <p className="text-[10px] text-amber-500 pt-1 border-t border-amber-100">
+                      ⓘ यह analysis historical sales data पर आधारित है। Actual inventory में कोई change नहीं होगा।
+                    </p>
+                  </div>
+                )}
+
+                {/* Link to What-If */}
+                <div className="flex items-center justify-end">
+                  <p className="text-xs text-gray-400">
+                    Festival impact को और explore करें →{' '}
+                    <button
+                      className="text-indigo-600 font-semibold hover:underline"
+                      onClick={() => {
+                        const el = document.getElementById('whatif-section')
+                        if (el) el.scrollIntoView({ behavior: 'smooth' })
+                      }}
+                    >
+                      🧠 What-If mein Scenario देखें
+                    </button>
+                  </p>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+
+        {/* ── SECTION: 🧠 What-If Simulation ─────────────────────────── */}
+        <div id="whatif-section" className="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
 
           {/* Header */}
           <div className="bg-gradient-to-r from-violet-50 to-indigo-50 px-6 py-4 border-b border-indigo-100">
