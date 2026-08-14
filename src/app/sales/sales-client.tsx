@@ -1,6 +1,7 @@
 'use client'
 
 import React, { useState, useMemo, useRef, useEffect } from 'react'
+import { useRouter } from 'next/navigation'
 import Papa from 'papaparse'
 import { Sale, importSales, generateDemoSales, createRetailSale } from './actions'
 import type { Product } from '@/app/inventory/types'
@@ -64,6 +65,7 @@ function formatPackInfo(product: Product): string | null {
 }
 
 export default function SalesClient({ initialSales, initialStats, products, fetchError }: SalesClientProps) {
+  const router = useRouter()
   const [sales] = useState<Sale[]>(initialSales)
   const [stats] = useState(initialStats)
   const [activeTab, setActiveTab] = useState<'new_sale' | 'history' | 'csv'>('new_sale')
@@ -254,17 +256,32 @@ export default function SalesClient({ initialSales, initialStats, products, fetc
 
         setCart((prev) => {
           const existingIndex = prev.findIndex((c) => c.product.id === matched.id)
-          const targetQty = Math.min(quantity, matched.current_stock)
 
           if (existingIndex >= 0) {
+            const currentQty = prev[existingIndex].quantity
+            const combined = currentQty + quantity
+            const capped = Math.min(combined, matched.current_stock)
+
+            if (combined > matched.current_stock) {
+              // Schedule the toast after this state update
+              setTimeout(() => {
+                showToast(
+                  `Stock limit reached for "${matched.name}". Quantity set to available stock (${matched.current_stock}).`,
+                  true
+                )
+              }, 0)
+            }
+
             const updated = [...prev]
             updated[existingIndex] = {
               ...updated[existingIndex],
-              quantity: targetQty,
+              quantity: capped,
             }
             return updated
           }
 
+          // New item — cap at available stock
+          const targetQty = Math.min(quantity, matched.current_stock)
           return [...prev, { product: matched, quantity: targetQty }]
         })
       } else {
@@ -424,7 +441,7 @@ export default function SalesClient({ initialSales, initialStats, products, fetc
       )
       setCart([])
       setPending(false)
-      window.location.reload()
+      router.refresh()
     }
   }
 

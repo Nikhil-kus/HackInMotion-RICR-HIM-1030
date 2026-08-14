@@ -205,7 +205,7 @@ const UNIT_WORDS = new Set([
   'पीस',
   'piece',
   'pieces',
-  'pc',,
+  'pc',
   'pcs',
 ])
 
