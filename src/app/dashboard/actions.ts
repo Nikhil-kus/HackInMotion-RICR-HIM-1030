@@ -95,6 +95,9 @@ export interface DashboardAnalyticsData {
   expiryRisks: ExpiryRiskProduct[]
   // Section H: StockMind AI Natural Language Insights
   aiInsights: string[]
+  // Section I: All products — full dataset for What-If Simulation (Phase 10H)
+  // biProducts is already computed internally; this exposes it without new queries.
+  allProducts: BIProductSummary[]
 }
 
 export async function fetchDashboardAnalytics(dateRangeDays: number): Promise<{ data?: DashboardAnalyticsData; error?: string }> {
@@ -486,7 +489,8 @@ export async function fetchDashboardAnalytics(dateRangeDays: number): Promise<{ 
         needsAttention,
         purchasing,
         expiryRisks,
-        aiInsights
+        aiInsights,
+        allProducts: biProducts
       }
     }
   } catch (err) {

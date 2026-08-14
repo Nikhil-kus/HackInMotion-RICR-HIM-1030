@@ -54,6 +54,7 @@ export default function DashboardClient({ initialData, initialDays }: DashboardC
     purchasing,
     expiryRisks,
     aiInsights,
+    allProducts,
   } = data
 
   // ── Today's stats: use the last date key in the trend array — this is the
@@ -74,7 +75,95 @@ export default function DashboardClient({ initialData, initialDays }: DashboardC
   // We don't have per-transaction count for today in the existing data shape,
   // so we show revenue and units only — no fabricated transaction count.
 
-  // ── Stock health helpers
+  // ── Phase 10H: What-If Simulation state
+  const [simPct, setSimPct] = useState<number>(20)
+  const [simCustomInput, setSimCustomInput] = useState<string>('')
+  const [simHorizon, setSimHorizon] = useState<number>(7)
+
+  // Derive the effective demand multiplier from preset or custom input
+  const effectivePct = useMemo(() => {
+    const parsed = parseFloat(simCustomInput)
+    if (simCustomInput !== '' && !isNaN(parsed) && parsed >= 0 && parsed <= 500) {
+      return parsed
+    }
+    return simPct
+  }, [simPct, simCustomInput])
+
+  // Build simulation product list from the full allProducts dataset (all products,
+  // not just top/slow/growth — exposed via actions.ts as biProducts).
+  const simProducts = useMemo(() => allProducts, [allProducts])
+
+  // Core simulation: per-product projected impact
+  const simResults = useMemo(() => {
+    return simProducts.map((p) => {
+      // Base daily demand derived from salesVolume over selected analytics window
+      // (same formula used server-side in actions.ts: salesVolume / dateRangeDays)
+      const baseDailyDemand = days > 0 ? p.salesVolume / days : 0
+      const simDailyDemand = baseDailyDemand * (1 + effectivePct / 100)
+      const normalPeriodDemand = baseDailyDemand * simHorizon
+      const simPeriodDemand = simDailyDemand * simHorizon
+      const projectedRemainingStock = p.current_stock - simPeriodDemand
+      // Stockout risk: projected stock goes negative, OR will run out before lead time replenishment
+      const stockoutRisk = projectedRemainingStock < 0
+      const nearRisk =
+        !stockoutRisk &&
+        projectedRemainingStock < simDailyDemand * p.supplier_lead_time_days
+      const extraUnitsNeeded = stockoutRisk
+        ? Math.ceil(Math.abs(projectedRemainingStock))
+        : nearRisk
+        ? Math.ceil(simDailyDemand * p.supplier_lead_time_days - projectedRemainingStock)
+        : 0
+      return {
+        id: p.id,
+        name: p.name,
+        current_stock: p.current_stock,
+        price: p.price,
+        baseDailyDemand,
+        simDailyDemand,
+        normalPeriodDemand,
+        simPeriodDemand,
+        projectedRemainingStock,
+        stockoutRisk,
+        nearRisk,
+        extraUnitsNeeded,
+        trend: p.trend,
+      }
+    })
+  }, [simProducts, days, effectivePct, simHorizon])
+
+  // Aggregate simulation summary
+  const simSummary = useMemo(() => {
+    // Total normal demand across all products in the selected analytics window
+    const totalNormalDemand = simResults.reduce((s, r) => s + r.normalPeriodDemand, 0)
+    const totalSimDemand = simResults.reduce((s, r) => s + r.simPeriodDemand, 0)
+    const stockoutCount = simResults.filter((r) => r.stockoutRisk).length
+    const atRiskCount = simResults.filter((r) => r.stockoutRisk || r.nearRisk).length
+    const totalExtraUnits = simResults.reduce((s, r) => s + r.extraUnitsNeeded, 0)
+    const totalExtraValue = simResults.reduce(
+      (s, r) => s + r.extraUnitsNeeded * r.price,
+      0
+    )
+    return {
+      totalNormalDemand: Math.round(totalNormalDemand),
+      totalSimDemand: Math.round(totalSimDemand),
+      stockoutCount,
+      atRiskCount,
+      totalExtraUnits,
+      totalExtraValue,
+    }
+  }, [simResults])
+
+  // Products to highlight: sorted by severity (stockout first, then near-risk)
+  const simRiskyProducts = useMemo(() => {
+    return simResults
+      .filter((r) => r.stockoutRisk || r.nearRisk)
+      .sort((a, b) => {
+        if (a.stockoutRisk && !b.stockoutRisk) return -1
+        if (!a.stockoutRisk && b.stockoutRisk) return 1
+        return b.extraUnitsNeeded - a.extraUnitsNeeded
+      })
+      .slice(0, 8)
+  }, [simResults])
   const totalHealthCount =
     healthDistribution.healthy +
     healthDistribution.low +
@@ -563,6 +652,331 @@ export default function DashboardClient({ initialData, initialDays }: DashboardC
                 </div>
               )}
             </div>
+          </div>
+        </div>
+
+        {/* ── SECTION: 🧠 What-If Simulation ─────────────────────────── */}
+        <div className="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
+
+          {/* Header */}
+          <div className="bg-gradient-to-r from-violet-50 to-indigo-50 px-6 py-4 border-b border-indigo-100">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+              <div>
+                <h3 className="text-md font-bold text-indigo-900">🧠 What-If Simulation</h3>
+                <p className="text-xs text-indigo-600 mt-0.5">
+                  Agar Demand बढ़ जाए toh? — Actual Stock में कोई change नहीं होगा।
+                </p>
+              </div>
+              {/* Safety badge */}
+              <span className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-100 border border-emerald-200 text-emerald-800 text-[10px] font-bold rounded-full self-start sm:self-auto shrink-0">
+                ✅ Read-Only · Actual inventory unchanged
+              </span>
+            </div>
+          </div>
+
+          <div className="p-6 space-y-6">
+
+            {/* Controls */}
+            <div className="flex flex-col md:flex-row gap-4">
+              {/* Demand % selector */}
+              <div className="flex-1">
+                <label className="block text-xs font-bold text-gray-600 mb-2 uppercase tracking-wider">
+                  📈 Demand Scenario
+                </label>
+                <div className="flex flex-wrap gap-2">
+                  {[10, 20, 30].map((pct) => (
+                    <button
+                      key={pct}
+                      onClick={() => { setSimPct(pct); setSimCustomInput('') }}
+                      className={`px-3 py-1.5 text-xs font-bold rounded-lg border transition-colors ${
+                        simCustomInput === '' && simPct === pct
+                          ? 'bg-indigo-600 text-white border-indigo-600'
+                          : 'bg-white text-gray-700 border-gray-300 hover:border-indigo-400'
+                      }`}
+                    >
+                      +{pct}%
+                    </button>
+                  ))}
+                  {/* Custom input */}
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      type="number"
+                      min="1"
+                      max="500"
+                      placeholder="Custom %"
+                      value={simCustomInput}
+                      onChange={(e) => setSimCustomInput(e.target.value)}
+                      className={`w-24 px-2 py-1.5 text-xs border rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-400 ${
+                        simCustomInput !== '' ? 'border-indigo-500 bg-indigo-50' : 'border-gray-300'
+                      }`}
+                    />
+                    <span className="text-xs text-gray-500 font-medium">%</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Horizon selector */}
+              <div>
+                <label className="block text-xs font-bold text-gray-600 mb-2 uppercase tracking-wider">
+                  📅 अगले कितने दिन
+                </label>
+                <div className="flex gap-2">
+                  {[7, 14, 30].map((h) => (
+                    <button
+                      key={h}
+                      onClick={() => setSimHorizon(h)}
+                      className={`px-3 py-1.5 text-xs font-bold rounded-lg border transition-colors ${
+                        simHorizon === h
+                          ? 'bg-indigo-600 text-white border-indigo-600'
+                          : 'bg-white text-gray-700 border-gray-300 hover:border-indigo-400'
+                      }`}
+                    >
+                      {h} दिन
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Active scenario label */}
+            <div className="flex items-center gap-2 text-sm font-bold text-indigo-800">
+              <span className="bg-indigo-100 border border-indigo-200 px-3 py-1 rounded-full text-xs">
+                Scenario: Demand +{effectivePct}% · अगले {simHorizon} दिन
+              </span>
+            </div>
+
+            {/* No data guard */}
+            {simProducts.length === 0 ? (
+              <div className="py-10 text-center text-gray-400 text-sm bg-gray-50 rounded-lg border border-gray-100">
+                Simulation के लिए products available नहीं हैं।
+              </div>
+            ) : (
+              <div className="space-y-6">
+
+                {/* ── Summary Cards */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-4">
+                    <span className="block text-xs font-semibold text-indigo-600 uppercase tracking-wider">Products at Risk</span>
+                    <span className="text-2xl font-bold text-indigo-900 mt-1 block">{simSummary.atRiskCount}</span>
+                    <span className="text-[10px] text-indigo-400">(of {simProducts.length} analyzed)</span>
+                  </div>
+                  <div className="bg-red-50 border border-red-100 rounded-xl p-4">
+                    <span className="block text-xs font-semibold text-red-600 uppercase tracking-wider">Stock-out Risk</span>
+                    <span className="text-2xl font-bold text-red-800 mt-1 block">{simSummary.stockoutCount}</span>
+                    <span className="text-[10px] text-red-400">projected stockouts</span>
+                  </div>
+                  <div className="bg-amber-50 border border-amber-100 rounded-xl p-4">
+                    <span className="block text-xs font-semibold text-amber-700 uppercase tracking-wider">Extra Stock Needed</span>
+                    <span className="text-2xl font-bold text-amber-900 mt-1 block">{simSummary.totalExtraUnits}</span>
+                    <span className="text-[10px] text-amber-500">units (scenario only)</span>
+                  </div>
+                  <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-4">
+                    <span className="block text-xs font-semibold text-emerald-700 uppercase tracking-wider">Est. Extra Purchase</span>
+                    <span className="text-xl font-bold text-emerald-900 mt-1 block">
+                      ₹{simSummary.totalExtraValue.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                    </span>
+                    <span className="text-[10px] text-emerald-500">hypothetical value</span>
+                  </div>
+                </div>
+
+                {/* ── Current vs Simulated Comparison */}
+                <div className="bg-gray-50 border border-gray-200 rounded-xl p-4">
+                  <h4 className="text-xs font-bold text-gray-600 uppercase tracking-wider mb-3">
+                    📊 Current vs +{effectivePct}% Scenario ({simHorizon} दिन)
+                  </h4>
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full text-xs text-gray-700">
+                      <thead>
+                        <tr className="border-b border-gray-200 text-gray-400 uppercase font-semibold">
+                          <th className="py-2 text-left">Metric</th>
+                          <th className="py-2 text-right">Current (Normal)</th>
+                          <th className="py-2 text-right">+{effectivePct}% Scenario</th>
+                          <th className="py-2 text-right">Difference</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-100 font-medium">
+                        <tr>
+                          <td className="py-2.5 text-gray-700">Simulated Demand ({simHorizon}d)</td>
+                          <td className="py-2.5 text-right font-bold">{simSummary.totalNormalDemand} units</td>
+                          <td className="py-2.5 text-right font-bold text-indigo-700">{simSummary.totalSimDemand} units</td>
+                          <td className="py-2.5 text-right text-amber-700 font-bold">
+                            +{(simSummary.totalSimDemand - simSummary.totalNormalDemand)} units
+                          </td>
+                        </tr>
+                        <tr>
+                          <td className="py-2.5 text-gray-700">Products at Risk</td>
+                          <td className="py-2.5 text-right font-bold">
+                            {simResults.filter(r =>
+                              r.current_stock - r.normalPeriodDemand < 0 ||
+                              r.current_stock - r.normalPeriodDemand < r.baseDailyDemand * simProducts.find(p => p.id === r.id)!.supplier_lead_time_days
+                            ).length}
+                          </td>
+                          <td className="py-2.5 text-right font-bold text-indigo-700">{simSummary.atRiskCount}</td>
+                          <td className="py-2.5 text-right text-red-600 font-bold">
+                            +{simSummary.atRiskCount - simResults.filter(r =>
+                              r.current_stock - r.normalPeriodDemand < 0 ||
+                              r.current_stock - r.normalPeriodDemand < r.baseDailyDemand * simProducts.find(p => p.id === r.id)!.supplier_lead_time_days
+                            ).length}
+                          </td>
+                        </tr>
+                        <tr>
+                          <td className="py-2.5 text-gray-700">Stock-out Risk</td>
+                          <td className="py-2.5 text-right font-bold">
+                            {simResults.filter(r => r.current_stock - r.normalPeriodDemand < 0).length}
+                          </td>
+                          <td className="py-2.5 text-right font-bold text-red-700">{simSummary.stockoutCount}</td>
+                          <td className="py-2.5 text-right text-red-600 font-bold">
+                            +{simSummary.stockoutCount - simResults.filter(r => r.current_stock - r.normalPeriodDemand < 0).length}
+                          </td>
+                        </tr>
+                        <tr>
+                          <td className="py-2.5 text-gray-700">Extra Units Needed</td>
+                          <td className="py-2.5 text-right font-bold">—</td>
+                          <td className="py-2.5 text-right font-bold text-amber-700">{simSummary.totalExtraUnits} units</td>
+                          <td className="py-2.5 text-right text-amber-700 font-bold">+{simSummary.totalExtraUnits}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* Simple visual bar comparison */}
+                  <div className="mt-4 space-y-2">
+                    <div className="flex items-center gap-3 text-xs">
+                      <span className="w-28 text-gray-500 shrink-0">Normal Demand</span>
+                      <div className="flex-1 bg-gray-200 rounded-full h-3 overflow-hidden">
+                        <div
+                          className="bg-blue-400 h-full rounded-full transition-all duration-500"
+                          style={{ width: simSummary.totalSimDemand > 0 ? `${Math.round((simSummary.totalNormalDemand / simSummary.totalSimDemand) * 100)}%` : '100%' }}
+                        />
+                      </div>
+                      <span className="w-16 text-right font-bold text-gray-700">{simSummary.totalNormalDemand}</span>
+                    </div>
+                    <div className="flex items-center gap-3 text-xs">
+                      <span className="w-28 text-indigo-700 font-semibold shrink-0">+{effectivePct}% Scenario</span>
+                      <div className="flex-1 bg-gray-200 rounded-full h-3 overflow-hidden">
+                        <div className="bg-indigo-500 h-full rounded-full transition-all duration-500" style={{ width: '100%' }} />
+                      </div>
+                      <span className="w-16 text-right font-bold text-indigo-700">{simSummary.totalSimDemand}</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* ── Products at Risk */}
+                <div>
+                  <h4 className="text-sm font-bold text-gray-900 mb-3">
+                    🔴 Scenario mein कौन से Products Risk पर हैं?
+                  </h4>
+                  {simRiskyProducts.length === 0 ? (
+                    <div className="py-8 text-center text-emerald-700 font-semibold text-sm bg-emerald-50 border border-emerald-100 rounded-lg">
+                      🎉 Is scenario mein किसी product पर major stock risk नहीं है।
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto border border-gray-200 rounded-lg">
+                      <table className="min-w-full text-xs text-gray-700">
+                        <thead className="bg-gray-50 text-gray-500 font-semibold uppercase">
+                          <tr>
+                            <th className="px-4 py-2.5 text-left">Product</th>
+                            <th className="px-4 py-2.5 text-center">Current Stock</th>
+                            <th className="px-4 py-2.5 text-center">Normal Demand/{simHorizon}d</th>
+                            <th className="px-4 py-2.5 text-center">Simulated Demand</th>
+                            <th className="px-4 py-2.5 text-center">Projected Remaining</th>
+                            <th className="px-4 py-2.5 text-center">Risk</th>
+                            <th className="px-4 py-2.5 text-right">Extra Units Needed</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-100 font-medium bg-white">
+                          {simRiskyProducts.map((r) => (
+                            <tr key={r.id} className={r.stockoutRisk ? 'bg-red-50/40' : 'bg-amber-50/30'}>
+                              <td className="px-4 py-3 font-bold text-gray-900">
+                                <div>{r.name}</div>
+                                <div className={`text-[10px] mt-0.5 ${r.trend === 'Increasing' ? 'text-emerald-600' : r.trend === 'Decreasing' ? 'text-red-500' : 'text-gray-400'}`}>
+                                  {r.trend === 'Increasing' ? '📈 Demand बढ़ रही है' : r.trend === 'Decreasing' ? '📉 Demand कम हो रही है' : '➡️ Stable'}
+                                </div>
+                              </td>
+                              <td className="px-4 py-3 text-center font-semibold">{r.current_stock}</td>
+                              <td className="px-4 py-3 text-center text-gray-500">{r.normalPeriodDemand.toFixed(1)}</td>
+                              <td className="px-4 py-3 text-center font-bold text-indigo-700">{r.simPeriodDemand.toFixed(1)}</td>
+                              <td className={`px-4 py-3 text-center font-bold ${r.projectedRemainingStock < 0 ? 'text-red-700' : 'text-amber-700'}`}>
+                                {r.projectedRemainingStock < 0
+                                  ? `−${Math.abs(r.projectedRemainingStock).toFixed(0)} (deficit)`
+                                  : r.projectedRemainingStock.toFixed(0)}
+                              </td>
+                              <td className="px-4 py-3 text-center">
+                                <span className={`inline-flex px-2 py-0.5 rounded text-[10px] font-bold border ${
+                                  r.stockoutRisk
+                                    ? 'bg-red-100 text-red-800 border-red-200'
+                                    : 'bg-amber-100 text-amber-800 border-amber-200'
+                                }`}>
+                                  {r.stockoutRisk ? '⚠️ Stock-out Risk' : '🟡 Near Risk'}
+                                </span>
+                              </td>
+                              <td className="px-4 py-3 text-right font-bold text-indigo-700">
+                                {r.extraUnitsNeeded > 0 ? `+${r.extraUnitsNeeded} units` : '—'}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+
+                {/* ── Reorder Impact */}
+                {simRiskyProducts.filter(r => r.extraUnitsNeeded > 0).length > 0 && (
+                  <div>
+                    <h4 className="text-sm font-bold text-gray-900 mb-1">
+                      🛍️ Scenario mein Kitna Maal Mangwana Pad Sakta Hai?
+                    </h4>
+                    <p className="text-xs text-gray-400 mb-3">
+                      यह actual Phase 7 reorder recommendation नहीं है — यह scenario-only estimate है।
+                    </p>
+                    <div className="overflow-x-auto border border-indigo-100 rounded-lg">
+                      <table className="min-w-full text-xs text-gray-700">
+                        <thead className="bg-indigo-50 text-indigo-600 font-semibold uppercase">
+                          <tr>
+                            <th className="px-4 py-2.5 text-left">Product</th>
+                            <th className="px-4 py-2.5 text-center">Current Stock</th>
+                            <th className="px-4 py-2.5 text-center">Simulated Demand</th>
+                            <th className="px-4 py-2.5 text-center">Potential Extra Order</th>
+                            <th className="px-4 py-2.5 text-right">Est. Value</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-indigo-50 font-medium bg-white">
+                          {simRiskyProducts
+                            .filter(r => r.extraUnitsNeeded > 0)
+                            .map((r) => (
+                              <tr key={r.id} className="hover:bg-indigo-50/30">
+                                <td className="px-4 py-3 font-bold text-gray-900">{r.name}</td>
+                                <td className="px-4 py-3 text-center">{r.current_stock} units</td>
+                                <td className="px-4 py-3 text-center text-indigo-700 font-semibold">{r.simPeriodDemand.toFixed(1)} units</td>
+                                <td className="px-4 py-3 text-center">
+                                  <span className="font-bold text-indigo-800 bg-indigo-100 px-2 py-0.5 rounded">
+                                    +{r.extraUnitsNeeded} units (scenario mein extra stock)
+                                  </span>
+                                </td>
+                                <td className="px-4 py-3 text-right font-bold text-indigo-700">
+                                  ₹{(r.extraUnitsNeeded * r.price).toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                                </td>
+                              </tr>
+                            ))}
+                        </tbody>
+                        <tfoot className="bg-indigo-50 border-t border-indigo-100">
+                          <tr>
+                            <td colSpan={3} className="px-4 py-2.5 font-bold text-indigo-800 text-right">Total Scenario Extra:</td>
+                            <td className="px-4 py-2.5 text-center font-bold text-indigo-900">{simSummary.totalExtraUnits} units</td>
+                            <td className="px-4 py-2.5 text-right font-bold text-indigo-900">
+                              ₹{simSummary.totalExtraValue.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                            </td>
+                          </tr>
+                        </tfoot>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+              </div>
+            )}
+
           </div>
         </div>
 
