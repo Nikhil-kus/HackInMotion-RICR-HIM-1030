@@ -2,6 +2,7 @@
 
 import { createClient } from '@/utils/supabase/server'
 import { evaluateProductAlert, AlertEngineResult } from '@/lib/alerts/engine'
+import { generateProductForecast } from '@/lib/forecasting/engine'
 import { revalidatePath } from 'next/cache'
 
 export interface DBAlertRecord {
@@ -163,19 +164,11 @@ export async function calculateAndStoreAlerts() {
     return { error: 'Failed to fetch sales history.' }
   }
 
-  // 4. Fetch forecasts
-  const { data: forecasts, error: forecastsError } = await supabase
-    .from('forecasts')
-    .select('product_id, forecast_date, predicted_demand')
-    .eq('user_id', user.id)
-    .eq('model_version', 'hybrid-wma-trend-seasonality-v1')
-
-  if (forecastsError) {
-    console.error('Error fetching forecasts for alerts:', forecastsError)
-    return { error: 'Failed to fetch forecasts.' }
-  }
-
-  // Fetch all existing active (unresolved) alerts for deduplication checks
+  // 4. Fetch all existing active (unresolved) alerts for deduplication checks
+  // NOTE: We no longer rely on the forecasts DB table for alert calculations.
+  // Forecasts are computed inline from the same sales data so that alerts
+  // are always based on fresh, consistent demand estimates.
+  // This eliminates the stale-forecast problem where alerts and forecasts disagreed.
   const { data: existingActiveAlerts, error: activeAlertsError } = await supabase
     .from('alerts')
     .select('id, product_id, alert_type, resolved')
@@ -189,10 +182,8 @@ export async function calculateAndStoreAlerts() {
 
   // Map database lists for quick in-memory grouping
   const salesMap = new Map<string, Array<{ sale_date: string; quantity: number }>>()
-  const forecastsMap = new Map<string, Array<{ forecast_date: string; predicted_demand: number }>>()
   products.forEach((p) => {
     salesMap.set(p.id, [])
-    forecastsMap.set(p.id, [])
   })
 
   sales?.forEach((s) => {
@@ -200,9 +191,23 @@ export async function calculateAndStoreAlerts() {
     if (list) list.push({ sale_date: s.sale_date, quantity: s.quantity })
   })
 
-  forecasts?.forEach((f) => {
-    const list = forecastsMap.get(f.product_id)
-    if (list) list.push({ forecast_date: f.forecast_date, predicted_demand: f.predicted_demand })
+  // Generate inline forecasts for each product using the same forecasting engine
+  // as the forecasts page — this guarantees alert calculations and forecast display agree.
+  const forecastsMap = new Map<string, Array<{ forecast_date: string; predicted_demand: number }>>()
+  products.forEach((p) => {
+    const productSales = salesMap.get(p.id) || []
+    const summary = generateProductForecast(p.id, productSales, 90)
+    if (!summary.insufficientData && summary.forecastList.length > 0) {
+      forecastsMap.set(
+        p.id,
+        summary.forecastList.map((f) => ({
+          forecast_date: f.forecastDate,
+          predicted_demand: f.predictedDemand,
+        }))
+      )
+    } else {
+      forecastsMap.set(p.id, [])
+    }
   })
 
   // Fetch active purchase order items to account for incoming on-order stock
@@ -224,12 +229,16 @@ export async function calculateAndStoreAlerts() {
   })
 
   // Evaluate alerts for every product in memory (current stock + on-order stock)
+  // onOrderQty is added so we don't generate duplicate purchase recommendations
+  // for stock already on its way. The raw current_stock is preserved separately
+  // so the alert message can display what the DB actually has on shelves.
   const results: AlertEngineResult[] = products.map((product) => {
     const onOrderQty = onOrderMap.get(product.id) || 0
+    const effectiveStock = product.current_stock + onOrderQty
     return evaluateProductAlert({
       productId: product.id,
       productName: product.name,
-      currentStock: product.current_stock + onOrderQty,
+      currentStock: effectiveStock,
       price: Number(product.price),
       leadTimeDays: product.supplier_lead_time_days,
       salesHistory: salesMap.get(product.id) || [],
@@ -277,9 +286,11 @@ export async function calculateAndStoreAlerts() {
 
     // Build serialized JSON message body
     const matchingProd = productMap.get(res.productId)
+    const onOrderQty = onOrderMap.get(res.productId) || 0
     const alertMessage = JSON.stringify({
       reason: res.reason,
-      currentStock: matchingProd?.current_stock || 0,
+      currentStock: matchingProd?.current_stock || 0,  // actual shelf stock (without on-order)
+      onOrderStock: onOrderQty,
       avgDailyDemand: res.avgDailyDemand,
       leadTimeDays: matchingProd?.supplier_lead_time_days || 0,
       shelfLifeDays: res.shelfLifeDays,

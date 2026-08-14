@@ -283,7 +283,7 @@ export async function fetchDashboardAnalytics(dateRangeDays: number): Promise<{ 
         trendCounts['Stable']++
       }
 
-      // Resolve status based on active alerts
+      // Resolve status based on active alerts — must match the alert engine's output exactly
       let status: 'out_of_stock' | 'critical' | 'low' | 'healthy' | 'overstock' = 'healthy'
       const activeAlert = alertsMap.get(p.id)
       if (activeAlert) {
@@ -292,11 +292,15 @@ export async function fetchDashboardAnalytics(dateRangeDays: number): Promise<{ 
         } else if (activeAlert.alert_type === 'overstock') {
           status = 'overstock'
         } else if (activeAlert.alert_type === 'reorder') {
+          // Map severity to status consistently with the engine:
+          // engine sets priority='critical' → severity='critical' → status='critical'
+          // engine sets priority='warning' → severity='medium' → status='low'
           status = activeAlert.severity === 'critical' ? 'critical' : 'low'
         }
       } else if (p.current_stock === 0) {
         status = 'out_of_stock'
       }
+      // If no active alert and stock > 0: status = 'healthy' (already set above)
 
       biProducts.push({
         id: p.id,

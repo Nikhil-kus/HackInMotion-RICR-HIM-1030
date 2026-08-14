@@ -280,6 +280,9 @@ export default function InventoryClient({ initialProducts, activeAlerts, fetchEr
   }, [products])
 
   // Stock status badge
+  // PRIMARY SOURCE: active alerts from the DB (pre-calculated by the alert engine on page load).
+  // SECONDARY SOURCE: inline engine calculation — used only when no active alert exists.
+  // This ensures the badge is never driven by naive stock-count thresholds.
   const getStockStatus = (productId: string, stock: number) => {
     const alert = activeAlerts.find((a) => a.product_id === productId)
     if (alert) {
@@ -288,8 +291,9 @@ export default function InventoryClient({ initialProducts, activeAlerts, fetchEr
       if (alert.alert_type === 'reorder') return { label: 'Low Stock', badgeClass: 'bg-amber-100 text-amber-800 border-amber-200' }
       if (alert.alert_type === 'overstock') return { label: 'Overstock', badgeClass: 'bg-blue-100 text-blue-800 border-blue-200' }
     }
+    // No active alert: the engine evaluated this product as healthy/no-action-needed.
+    // Show 'Healthy' — but also guard against the edge case of zero stock with no alert.
     if (stock === 0) return { label: 'Out of Stock', badgeClass: 'bg-red-100 text-red-800 border-red-200' }
-    if (stock < 10) return { label: 'Low Stock', badgeClass: 'bg-amber-100 text-amber-800 border-amber-200' }
     return { label: 'Healthy', badgeClass: 'bg-emerald-100 text-emerald-800 border-emerald-200' }
   }
 

@@ -10,6 +10,7 @@ interface AlertsClientProps {
 interface AlertDetailInfo {
   reason: string
   currentStock: number
+  onOrderStock?: number
   avgDailyDemand: number
   leadTimeDays: number
   shelfLifeDays?: number | null
@@ -353,8 +354,11 @@ export default function AlertsClient({ initialAlerts, fetchError }: AlertsClient
                         <div className="line-clamp-2 font-medium">{displayMessage}</div>
                         <div className="text-[10px] text-gray-400 mt-1.5 flex flex-wrap gap-x-2 gap-y-1">
                           <span>Stock: {detailInfo ? detailInfo.currentStock : (a.products?.current_stock ?? 0)}</span>
+                          {detailInfo && (detailInfo.onOrderStock ?? 0) > 0 && (
+                            <><span>•</span><span className="text-blue-500">On Order: +{detailInfo.onOrderStock}</span></>
+                          )}
                           <span>•</span>
-                          <span>Demand: {detailInfo ? detailInfo.avgDailyDemand.toFixed(1) : a.avgDailyDemand.toFixed(1)}/day</span>
+                          <span>Demand: {detailInfo ? detailInfo.avgDailyDemand.toFixed(2) : a.avgDailyDemand.toFixed(2)}/day</span>
                           <span>•</span>
                           <span>Lead Time: {detailInfo ? detailInfo.leadTimeDays : (a.products?.supplier_lead_time_days ?? 0)} days</span>
                           {detailInfo && detailInfo.shelfLifeDays && (
@@ -440,7 +444,7 @@ export default function AlertsClient({ initialAlerts, fetchError }: AlertsClient
                       <tr key={r.id} className="hover:bg-gray-50/50 transition-colors">
                         <td className="px-6 py-4 font-medium">{r.products?.name}</td>
                         <td className="px-6 py-4">{detailInfo ? detailInfo.currentStock : r.products?.current_stock} units</td>
-                        <td className="px-6 py-4">{(detailInfo ? detailInfo.avgDailyDemand : r.avgDailyDemand).toFixed(1)} units/day</td>
+                        <td className="px-6 py-4">{(detailInfo ? detailInfo.avgDailyDemand : r.avgDailyDemand).toFixed(2)} units/day</td>
                         <td className="px-6 py-4">{leadTime} days</td>
                         <td className="px-6 py-4">{shelfLife ? `${shelfLife} days` : 'N/A'}</td>
                         <td className="px-6 py-4">{detailInfo ? `${expectedDemandVal} units` : '--'}</td>
