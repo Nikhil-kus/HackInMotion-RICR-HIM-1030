@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 300">
+  <rect width="300" height="300" fill="#ffffff"/>
+  <ellipse cx="150" cy="272" rx="68" ry="10" fill="#e0e0e0"/>
+  <!-- Lays chips bag — classic yellow -->
+  <!-- Bag outline with pillow shape -->
+  <ellipse cx="150" cy="155" rx="90" ry="115" fill="#FDD835"/>
+  <!-- Red arc top -->
+  <ellipse cx="150" cy="72" rx="90" ry="50" fill="#D32F2F"/>
+  <!-- Seal at top -->
+  <rect x="100" y="40" width="100" height="20" rx="10" fill="#B71C1C"/>
+  <!-- Lays logo area -->
+  <ellipse cx="150" cy="120" rx="68" ry="45" fill="#D32F2F"/>
+  <!-- Lays script text -->
+  <text x="150" y="108" text-anchor="middle" font-family="Georgia,serif" font-size="18" font-style="italic" font-weight="900" fill="#FDD835">lay's</text>
+  <text x="150" y="132" text-anchor="middle" font-family="Arial Black,Arial,sans-serif" font-size="13" font-weight="900" fill="#ffffff" letter-spacing="1">CLASSIC</text>
+  <!-- Chips illustration -->
+  <ellipse cx="140" cy="188" rx="28" ry="16" fill="#FFB300" opacity="0.8" transform="rotate(-15,140,188)"/>
+  <ellipse cx="165" cy="195" rx="25" ry="14" fill="#FFA000" opacity="0.8" transform="rotate(10,165,195)"/>
+  <ellipse cx="148" cy="212" rx="22" ry="13" fill="#FFB300" opacity="0.8" transform="rotate(-5,148,212)"/>
+  <!-- Salted text badge -->
+  <rect x="95" y="232" width="110" height="22" rx="11" fill="#D32F2F"/>
+  <text x="150" y="247" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" font-weight="700" fill="#FDD835" letter-spacing="1">SALTED</text>
+  <!-- Weight -->
+  <text x="150" y="268" text-anchor="middle" font-family="Arial,sans-serif" font-size="9" fill="#aaa">26g</text>
+</svg>

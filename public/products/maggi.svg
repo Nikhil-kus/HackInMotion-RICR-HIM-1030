@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 300">
+  <!-- White background -->
+  <rect width="300" height="300" fill="#ffffff"/>
+  <!-- Packet shadow -->
+  <ellipse cx="150" cy="270" rx="80" ry="12" fill="#e0e0e0"/>
+  <!-- Main packet body — yellow Maggi colors -->
+  <rect x="60" y="40" width="180" height="220" rx="20" fill="#FFD600"/>
+  <!-- Red top band -->
+  <rect x="60" y="40" width="180" height="55" rx="20" fill="#D32F2F"/>
+  <rect x="60" y="75" width="180" height="20" fill="#D32F2F"/>
+  <!-- Nestle white stripe -->
+  <rect x="60" y="88" width="180" height="10" fill="#ffffff" opacity="0.3"/>
+  <!-- MAGGI logo area -->
+  <rect x="75" y="100" width="150" height="50" rx="8" fill="#D32F2F"/>
+  <!-- MAGGI text -->
+  <text x="150" y="135" text-anchor="middle" font-family="Arial Black,Arial,sans-serif" font-size="32" font-weight="900" fill="#FFD600" letter-spacing="2">MAGGI</text>
+  <!-- 2-MINUTE NOODLES text -->
+  <text x="150" y="168" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" font-weight="700" fill="#D32F2F" letter-spacing="1">2-MINUTE NOODLES</text>
+  <!-- Masala badge -->
+  <circle cx="150" cy="200" r="30" fill="#D32F2F"/>
+  <text x="150" y="196" text-anchor="middle" font-family="Arial,sans-serif" font-size="10" font-weight="700" fill="#FFD600">MASALA</text>
+  <text x="150" y="210" text-anchor="middle" font-family="Arial,sans-serif" font-size="10" font-weight="700" fill="#ffffff">TASTEMAKER</text>
+  <!-- Bottom nestle text -->
+  <text x="150" y="250" text-anchor="middle" font-family="Arial,sans-serif" font-size="10" fill="#D32F2F" font-weight="600">Nestlé</text>
+  <!-- Pack details -->
+  <text x="150" y="262" text-anchor="middle" font-family="Arial,sans-serif" font-size="9" fill="#888">70g</text>
+</svg>
