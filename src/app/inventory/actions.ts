@@ -22,7 +22,7 @@ export async function fetchProducts() {
 
   if (error) {
     console.error('Error fetching products:', error)
-    return { error: error.message }
+    return { error: 'Failed to load products. Please try again.' }
   }
 
   return { data: data as Product[] }
@@ -154,7 +154,7 @@ export async function addProduct(formData: FormData) {
     .single()
 
   if (error) {
-    return { error: error.message }
+    return { error: 'Failed to save product. Please try again.' }
   }
 
   revalidatePath('/inventory')
@@ -226,7 +226,7 @@ export async function updateProduct(id: string, formData: FormData) {
     .eq('id', id)
 
   if (error) {
-    return { error: error.message }
+    return { error: 'Failed to update product. Please try again.' }
   }
 
   revalidatePath('/inventory')
@@ -248,7 +248,7 @@ export async function deleteProduct(id: string) {
     .eq('id', id)
 
   if (error) {
-    return { error: error.message }
+    return { error: 'Failed to delete product. Please try again.' }
   }
 
   revalidatePath('/inventory')
@@ -276,7 +276,7 @@ export async function fetchAllAliases() {
 
   if (error) {
     console.error('Error fetching aliases:', error)
-    return { error: error.message }
+    return { error: 'Failed to load aliases. Please try again.' }
   }
 
   return { data: data as ProductAlias[] }
@@ -317,7 +317,7 @@ export async function addAlias(productId: string, alias: string, language?: stri
     .single()
 
   if (error) {
-    return { error: error.message }
+    return { error: 'Failed to add alias. Please try again.' }
   }
 
   revalidatePath('/inventory')
@@ -344,7 +344,7 @@ export async function deleteAlias(aliasId: string) {
     .eq('user_id', user.id)
 
   if (error) {
-    return { error: error.message }
+    return { error: 'Failed to delete alias. Please try again.' }
   }
 
   revalidatePath('/inventory')

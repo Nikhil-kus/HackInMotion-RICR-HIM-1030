@@ -3,6 +3,8 @@
 import React, { useState, useMemo } from 'react'
 import type { Product, ProductAlias } from './types'
 import { SUPPORTED_UNITS, SUPPORTED_PACK_SIZE_UNITS } from './types'
+import Image from 'next/image'
+import { getProductImage } from '@/lib/product-images'
 import {
   addProduct,
   updateProduct,
@@ -513,13 +515,26 @@ export default function InventoryClient({ initialProducts, activeAlerts, fetchEr
                     <tr key={product.id} className="hover:bg-gray-50/50 transition-colors">
                       {/* Product name + compact Kirana info */}
                       <td className="px-6 py-4 text-sm">
-                        <div className="font-medium text-gray-900">{product.name}</div>
-                        {packInfo && (
-                          <div className="text-xs text-gray-500 mt-0.5">{packInfo}</div>
-                        )}
-                        {product.barcode && (
-                          <div className="text-xs text-gray-400 mt-0.5 font-mono">Barcode: {product.barcode}</div>
-                        )}
+                        <div className="flex items-center gap-3">
+                          <div className="relative w-10 h-10 rounded-lg bg-gray-50 border border-gray-200 overflow-hidden flex-shrink-0">
+                            <Image
+                              src={getProductImage(product.name, product.brand)}
+                              alt={product.name}
+                              fill
+                              className="object-contain p-1"
+                              sizes="40px"
+                            />
+                          </div>
+                          <div>
+                            <div className="font-medium text-gray-900">{product.name}</div>
+                            {packInfo && (
+                              <div className="text-xs text-gray-500 mt-0.5">{packInfo}</div>
+                            )}
+                            {product.barcode && (
+                              <div className="text-xs text-gray-400 mt-0.5 font-mono">Barcode: {product.barcode}</div>
+                            )}
+                          </div>
+                        </div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{product.category}</td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{product.current_stock}</td>

@@ -40,7 +40,18 @@ export async function createRetailSale(items: RetailCartItem[]) {
 
   if (error) {
     console.error('Error executing retail sale transaction:', error)
-    return { error: error.message }
+    // Surface business-rule errors from the RPC (stock, auth) verbatim; they are
+    // safe user-facing messages written by us in the stored procedure.  Any other
+    // unexpected DB error is replaced with a generic message.
+    const knownPrefixes = [
+      'Unauthorized',
+      'Cart is empty',
+      'Invalid quantity',
+      'Product not found',
+      'Insufficient stock',
+    ]
+    const isKnown = knownPrefixes.some((p) => error.message?.startsWith(p))
+    return { error: isKnown ? error.message : 'Failed to complete sale. Please try again.' }
   }
 
   revalidatePath('/sales')
@@ -86,7 +97,7 @@ export async function fetchSalesData() {
 
   if (error) {
     console.error('Error fetching sales:', error)
-    return { error: error.message }
+    return { error: 'Failed to load sales data. Please try again.' }
   }
 
   interface DBResponse {
@@ -209,7 +220,7 @@ export async function importSales(salesList: Array<{
 
   if (insertError) {
     console.error('Error importing sales:', insertError)
-    return { error: insertError.message }
+    return { error: 'Failed to import sales records. Please try again.' }
   }
 
   revalidatePath('/sales')
@@ -330,7 +341,7 @@ export async function generateDemoSales(products: Array<{ id: string; name: stri
 
   if (deleteError) {
     console.error('Error clearing old demo data:', deleteError)
-    return { error: deleteError.message }
+    return { error: 'Failed to clear existing demo data. Please try again.' }
   }
 
   // Insert the fresh generated batch
@@ -344,7 +355,7 @@ export async function generateDemoSales(products: Array<{ id: string; name: stri
 
     if (insertError) {
       console.error('Error inserting demo sales chunk:', insertError)
-      return { error: insertError.message }
+      return { error: 'Failed to generate demo data. Please try again.' }
     }
   }
 

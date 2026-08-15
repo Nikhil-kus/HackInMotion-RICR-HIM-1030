@@ -1,4 +1,4 @@
-﻿'use client'
+'use client'
 
 import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react'
 import Image from 'next/image'
@@ -67,15 +67,8 @@ interface CompletedBill {
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 /** Maps a lowercase product name to its product artwork SVG. */
-function getProductImage(name: string): string {
-  const n = name.toLowerCase().trim()
-  if (n.includes('maggi') || n.includes('noodle')) return '/products/maggi.svg'
-  if (n.includes('kurkure') || n.includes('kurkurey')) return '/products/kurkure.svg'
-  if (n.includes('chip') || n.includes('lays') || n.includes('bingo')) return '/products/chips.svg'
-  if (n.includes('bread') || n.includes('pav') || n.includes('bun')) return '/products/bread.svg'
-  if (n.includes('milk') || n.includes('doodh') || n.includes('दूध')) return '/products/milk.svg'
-  return '/products/placeholder.svg'
-}
+import { getProductImage } from '@/lib/product-images'
+
 
 function formatDate(dateStr: string) {
   const d = new Date(dateStr)
