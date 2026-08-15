@@ -147,14 +147,46 @@ export function calculateDaysOfStockRemaining(currentStock: number, avgDailyDema
 /**
  * Reorder Point = (avgDailyDemand × leadTimeDays) + safetyStock
  *
- * The safety buffer embedded here is just for the ROP display value.
- * Actual safety stock in the order calculation is computed separately.
+ * FIX I5: The safety component now uses the SAME methodology as
+ * calculateDetailedReorder so that the displayed ROP and the recommended
+ * order quantity are explainable with a single consistent safety-stock concept:
+ *
+ *   If activeSaleDays ≥ 5:  safetyStock = 1.65 × σ × √(max(1, leadTimeDays))
+ *   Otherwise (sparse data): safetyStock = max(3, 0.2 × avg × max(1, lead))
+ *
+ * The old ad-hoc buffer (max(5, leadTimeDemand × 0.3)) is removed.
+ *
+ * The `salesHistory` parameter defaults to [] for backward compatibility with
+ * any callers that do not yet supply it — in that case the sparse-data
+ * fallback fires, which is conservative and correct.
  */
-export function calculateReorderPoint(avgDailyDemand: number, leadTimeDays: number): number {
+export function calculateReorderPoint(
+  avgDailyDemand: number,
+  leadTimeDays: number,
+  salesHistory: Array<{ sale_date: string; quantity: number }> = []
+): number {
   if (avgDailyDemand <= 0) return 0
+
   const leadTimeDemand = avgDailyDemand * leadTimeDays
-  const safetyBuffer = Math.max(5, leadTimeDemand * 0.3)
-  return Math.round(leadTimeDemand + safetyBuffer)
+
+  // FIX I5: compute safety stock using the same logic as calculateDetailedReorder
+  let safetyStock = 0
+  const demandMetrics = calculateDemandMetrics(salesHistory, 28)
+
+  if (demandMetrics.activeSaleDays >= 5) {
+    const stdDev = calculateDemandStandardDeviation(salesHistory, avgDailyDemand, 28)
+    if (stdDev > 0) {
+      safetyStock = 1.65 * stdDev * Math.sqrt(Math.max(1, leadTimeDays))
+    } else {
+      safetyStock = Math.max(3, 0.2 * avgDailyDemand * Math.max(1, leadTimeDays))
+    }
+  } else {
+    safetyStock = Math.max(3, 0.2 * avgDailyDemand * Math.max(1, leadTimeDays))
+  }
+
+  if (isNaN(safetyStock) || !isFinite(safetyStock) || safetyStock < 0) safetyStock = 0
+
+  return Math.round(leadTimeDemand + safetyStock)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -566,7 +598,7 @@ export function evaluateProductAlert(input: AlertEngineInput): AlertEngineResult
 
   let priority = calculateAlertPriority(status)
 
-  const reorderPoint = calculateReorderPoint(avgDailyDemand, input.leadTimeDays)
+  const reorderPoint = calculateReorderPoint(avgDailyDemand, input.leadTimeDays, input.salesHistory)
 
   const reorderDetail = calculateDetailedReorder(
     input.currentStock,
