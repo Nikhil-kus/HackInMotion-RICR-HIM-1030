@@ -118,7 +118,7 @@ function ProductCard({ product, cartItem, onAdd, onUpdate }: ProductCardProps) {
           src={imgSrc}
           alt={product.name}
           fill
-          className="object-contain p-3"
+          className="object-cover"
           sizes="(max-width: 640px) 50vw, (max-width: 1024px) 33vw, 25vw"
           onError={() => {/* fallback handled by src default */}}
         />
@@ -315,7 +315,7 @@ function CartSheet({
             return (
               <div key={item.product.id} className="flex items-start gap-3 p-3 bg-gray-50 rounded-xl border border-gray-100">
                 <div className="relative w-10 h-10 shrink-0 rounded-lg overflow-hidden bg-white border border-gray-100">
-                  <Image src={getProductImage(item.product.name)} alt={item.product.name} fill className="object-contain p-1" sizes="40px"/>
+                  <Image src={getProductImage(item.product.name)} alt={item.product.name} fill className="object-cover" sizes="40px"/>
                 </div>
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-semibold text-gray-900 leading-tight truncate">{item.product.name}</p>

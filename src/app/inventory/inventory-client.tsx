@@ -521,7 +521,7 @@ export default function InventoryClient({ initialProducts, activeAlerts, fetchEr
                               src={getProductImage(product.name, product.brand)}
                               alt={product.name}
                               fill
-                              className="object-contain p-1"
+                              className="object-cover"
                               sizes="40px"
                             />
                           </div>
